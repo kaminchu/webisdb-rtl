@@ -47,7 +47,6 @@ export function ConnectPanel() {
           </Button>
           <Button
             type="button"
-            variant="ghost"
             onClick={() => receiverController.discardBuffer()}
             disabled={!connected}
           >

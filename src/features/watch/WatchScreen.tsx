@@ -65,7 +65,6 @@ export function WatchScreen() {
           </Button>
           <Button
             type="button"
-            variant="ghost"
             onClick={() => receiverController.discardBuffer()}
             disabled={!connected}
           >
