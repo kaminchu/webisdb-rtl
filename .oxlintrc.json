@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "react/react-in-jsx-scope": "off",
+    "react/no-unknown-property": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "typescript/no-explicit-any": "warn",
+    "no-console": "off"
+  },
+  "ignorePatterns": ["dist", "coverage", "node_modules", "public/sw.js"]
+}

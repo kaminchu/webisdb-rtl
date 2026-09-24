@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/workers/*.worker.ts",
+    "src/models/index.ts",
+    "src/iq/IQSource.ts",
+    "src/iq/iqFormat.ts",
+    "src/dsp/backend.ts",
+    "src/dsp/isdbtParams.ts",
+    "src/app/store.ts",
+    "src/app/eventBus.ts",
+    "src/app/receiverController.ts",
+    "src/storage/index.ts",
+    "src/media/index.ts",
+    "src/ts/index.ts",
+    "src/driver/rtlsdr/index.ts"
+  ],
+  "project": ["src/**/*.{ts,tsx}"],
+  "rules": {
+    "exports": "off",
+    "types": "off",
+    "enumMembers": "off",
+    "duplicates": "off"
+  }
+}

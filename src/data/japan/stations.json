@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-24",
+  "items": [
+    {
+      "id": "nhk-e-niigata",
+      "channelId": "yahiko-13",
+      "name": "NHK Eテレ",
+      "network": "NHK-E"
+    },
+    {
+      "id": "nhk-g-niigata",
+      "channelId": "yahiko-15",
+      "name": "NHK総合",
+      "network": "NHK-G"
+    },
+    {
+      "id": "bsn",
+      "channelId": "yahiko-17",
+      "name": "BSN新潟放送",
+      "network": "JNN"
+    },
+    {
+      "id": "nst",
+      "channelId": "yahiko-19",
+      "name": "NST新潟総合テレビ",
+      "network": "FNN"
+    },
+    {
+      "id": "ux",
+      "channelId": "yahiko-23",
+      "name": "UX新潟テレビ21",
+      "network": "ANN"
+    },
+    {
+      "id": "teny",
+      "channelId": "yahiko-26",
+      "name": "TeNYテレビ新潟",
+      "network": "NNN"
+    }
+  ]
+}

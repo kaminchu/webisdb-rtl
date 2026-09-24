@@ -1,0 +1,39 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+dist-ssr
+coverage
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local env
+.env
+.env.local
+.env.*.local
+*.local
+
+# Test captures / dumps (large, potentially licensed content)
+tests/fixtures/iq/*.iq
+tests/fixtures/ts/*.ts
+/tmp-dumps
+*.iq
+*.ts.dat
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

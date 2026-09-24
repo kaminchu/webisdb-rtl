@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-24",
+  "items": [
+    {
+      "id": "yahiko-13",
+      "transmitterId": "yahiko",
+      "physicalChannel": 13,
+      "frequency": 473142857
+    },
+    {
+      "id": "yahiko-15",
+      "transmitterId": "yahiko",
+      "physicalChannel": 15,
+      "frequency": 485142857
+    },
+    {
+      "id": "yahiko-17",
+      "transmitterId": "yahiko",
+      "physicalChannel": 17,
+      "frequency": 497142857
+    },
+    {
+      "id": "yahiko-19",
+      "transmitterId": "yahiko",
+      "physicalChannel": 19,
+      "frequency": 509142857
+    },
+    {
+      "id": "yahiko-23",
+      "transmitterId": "yahiko",
+      "physicalChannel": 23,
+      "frequency": 533142857
+    },
+    {
+      "id": "yahiko-26",
+      "transmitterId": "yahiko",
+      "physicalChannel": 26,
+      "frequency": 551142857
+    }
+  ]
+}

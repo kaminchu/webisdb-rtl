@@ -1,0 +1,77 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.input {
+  background: var(--color-bg-input);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  width: 130px;
+}
+
+.note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.label {
+  font-size: 13px;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-bad);
+}
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spectrum {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.spectrumCanvas {
+  width: 100%;
+  height: 140px;
+  display: block;
+  background: #0b1020;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.spectrumLabels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}

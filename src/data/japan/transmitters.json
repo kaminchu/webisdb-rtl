@@ -1,0 +1,382 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-24",
+  "items": [
+    {
+      "id": "sapporo",
+      "name": "手稲山",
+      "regionId": "hokkaido",
+      "latitude": 43.1,
+      "longitude": 141.2,
+      "channelIds": []
+    },
+    {
+      "id": "aomori",
+      "name": "八甲田山",
+      "regionId": "aomori",
+      "latitude": 40.66,
+      "longitude": 140.88,
+      "channelIds": []
+    },
+    {
+      "id": "morioka",
+      "name": "姫神山",
+      "regionId": "iwate",
+      "latitude": 39.78,
+      "longitude": 141.11,
+      "channelIds": []
+    },
+    {
+      "id": "sendai",
+      "name": "大年寺山",
+      "regionId": "miyagi",
+      "latitude": 38.25,
+      "longitude": 140.85,
+      "channelIds": []
+    },
+    {
+      "id": "akita",
+      "name": "大森山",
+      "regionId": "akita",
+      "latitude": 39.68,
+      "longitude": 140.1,
+      "channelIds": []
+    },
+    {
+      "id": "yamagata",
+      "name": "蔵王山",
+      "regionId": "yamagata",
+      "latitude": 38.15,
+      "longitude": 140.44,
+      "channelIds": []
+    },
+    {
+      "id": "fukushima",
+      "name": "笹森山",
+      "regionId": "fukushima",
+      "latitude": 37.79,
+      "longitude": 140.44,
+      "channelIds": []
+    },
+    {
+      "id": "mito",
+      "name": "水戸",
+      "regionId": "ibaraki",
+      "latitude": 36.37,
+      "longitude": 140.47,
+      "channelIds": []
+    },
+    {
+      "id": "utsunomiya",
+      "name": "宇都宮",
+      "regionId": "tochigi",
+      "latitude": 36.55,
+      "longitude": 139.9,
+      "channelIds": []
+    },
+    {
+      "id": "maebashi",
+      "name": "前橋",
+      "regionId": "gunma",
+      "latitude": 36.39,
+      "longitude": 139.06,
+      "channelIds": []
+    },
+    {
+      "id": "saitama",
+      "name": "さいたま",
+      "regionId": "saitama",
+      "latitude": 35.86,
+      "longitude": 139.65,
+      "channelIds": []
+    },
+    {
+      "id": "chiba",
+      "name": "千葉",
+      "regionId": "chiba",
+      "latitude": 35.61,
+      "longitude": 140.12,
+      "channelIds": []
+    },
+    {
+      "id": "tokyo-skytree",
+      "name": "東京スカイツリー",
+      "regionId": "tokyo",
+      "latitude": 35.71,
+      "longitude": 139.81,
+      "channelIds": []
+    },
+    {
+      "id": "yokohama",
+      "name": "横浜",
+      "regionId": "kanagawa",
+      "latitude": 35.51,
+      "longitude": 139.67,
+      "channelIds": []
+    },
+    {
+      "id": "yahiko",
+      "name": "弥彦山",
+      "regionId": "niigata",
+      "latitude": 37.55,
+      "longitude": 138.83,
+      "channelIds": ["yahiko-13", "yahiko-15", "yahiko-17", "yahiko-19", "yahiko-23", "yahiko-26"]
+    },
+    {
+      "id": "toyama",
+      "name": "呉羽山",
+      "regionId": "toyama",
+      "latitude": 36.68,
+      "longitude": 137.19,
+      "channelIds": []
+    },
+    {
+      "id": "kanazawa",
+      "name": "金沢",
+      "regionId": "ishikawa",
+      "latitude": 36.56,
+      "longitude": 136.66,
+      "channelIds": []
+    },
+    {
+      "id": "fukui",
+      "name": "足羽山",
+      "regionId": "fukui",
+      "latitude": 36.05,
+      "longitude": 136.2,
+      "channelIds": []
+    },
+    {
+      "id": "kofu",
+      "name": "甲府",
+      "regionId": "yamanashi",
+      "latitude": 36.66,
+      "longitude": 138.57,
+      "channelIds": []
+    },
+    {
+      "id": "nagano",
+      "name": "美ヶ原",
+      "regionId": "nagano",
+      "latitude": 36.23,
+      "longitude": 138.12,
+      "channelIds": []
+    },
+    {
+      "id": "gifu",
+      "name": "岐阜",
+      "regionId": "gifu",
+      "latitude": 35.43,
+      "longitude": 136.78,
+      "channelIds": []
+    },
+    {
+      "id": "shizuoka",
+      "name": "静岡",
+      "regionId": "shizuoka",
+      "latitude": 34.98,
+      "longitude": 138.38,
+      "channelIds": []
+    },
+    {
+      "id": "nagoya",
+      "name": "瀬戸デジタルタワー",
+      "regionId": "aichi",
+      "latitude": 35.16,
+      "longitude": 137.07,
+      "channelIds": []
+    },
+    {
+      "id": "tsu",
+      "name": "津",
+      "regionId": "mie",
+      "latitude": 34.73,
+      "longitude": 136.51,
+      "channelIds": []
+    },
+    {
+      "id": "otsu",
+      "name": "大津",
+      "regionId": "shiga",
+      "latitude": 35,
+      "longitude": 135.87,
+      "channelIds": []
+    },
+    {
+      "id": "kyoto",
+      "name": "京都",
+      "regionId": "kyoto",
+      "latitude": 35.01,
+      "longitude": 135.77,
+      "channelIds": []
+    },
+    {
+      "id": "ikoma",
+      "name": "生駒山",
+      "regionId": "osaka",
+      "latitude": 34.68,
+      "longitude": 135.69,
+      "channelIds": []
+    },
+    {
+      "id": "kobe",
+      "name": "神戸",
+      "regionId": "hyogo",
+      "latitude": 34.7,
+      "longitude": 135.2,
+      "channelIds": []
+    },
+    {
+      "id": "nara",
+      "name": "奈良",
+      "regionId": "nara",
+      "latitude": 34.68,
+      "longitude": 135.69,
+      "channelIds": []
+    },
+    {
+      "id": "wakayama",
+      "name": "和歌山",
+      "regionId": "wakayama",
+      "latitude": 34.23,
+      "longitude": 135.17,
+      "channelIds": []
+    },
+    {
+      "id": "tottori",
+      "name": "鳥取",
+      "regionId": "tottori",
+      "latitude": 35.5,
+      "longitude": 134.24,
+      "channelIds": []
+    },
+    {
+      "id": "matsue",
+      "name": "松江",
+      "regionId": "shimane",
+      "latitude": 35.47,
+      "longitude": 133.05,
+      "channelIds": []
+    },
+    {
+      "id": "okayama",
+      "name": "岡山",
+      "regionId": "okayama",
+      "latitude": 34.66,
+      "longitude": 133.92,
+      "channelIds": []
+    },
+    {
+      "id": "hiroshima",
+      "name": "広島",
+      "regionId": "hiroshima",
+      "latitude": 34.42,
+      "longitude": 132.52,
+      "channelIds": []
+    },
+    {
+      "id": "yamaguchi",
+      "name": "山口",
+      "regionId": "yamaguchi",
+      "latitude": 34.19,
+      "longitude": 131.47,
+      "channelIds": []
+    },
+    {
+      "id": "tokushima",
+      "name": "徳島",
+      "regionId": "tokushima",
+      "latitude": 34.07,
+      "longitude": 134.55,
+      "channelIds": []
+    },
+    {
+      "id": "takamatsu",
+      "name": "高松",
+      "regionId": "kagawa",
+      "latitude": 34.34,
+      "longitude": 134.05,
+      "channelIds": []
+    },
+    {
+      "id": "matsuyama",
+      "name": "松山",
+      "regionId": "ehime",
+      "latitude": 33.84,
+      "longitude": 132.77,
+      "channelIds": []
+    },
+    {
+      "id": "kochi",
+      "name": "高知",
+      "regionId": "kochi",
+      "latitude": 33.56,
+      "longitude": 133.53,
+      "channelIds": []
+    },
+    {
+      "id": "fukuoka",
+      "name": "福岡",
+      "regionId": "fukuoka",
+      "latitude": 33.59,
+      "longitude": 130.4,
+      "channelIds": []
+    },
+    {
+      "id": "saga",
+      "name": "佐賀",
+      "regionId": "saga",
+      "latitude": 33.25,
+      "longitude": 130.3,
+      "channelIds": []
+    },
+    {
+      "id": "nagasaki",
+      "name": "長崎",
+      "regionId": "nagasaki",
+      "latitude": 32.75,
+      "longitude": 129.88,
+      "channelIds": []
+    },
+    {
+      "id": "kumamoto",
+      "name": "熊本",
+      "regionId": "kumamoto",
+      "latitude": 32.8,
+      "longitude": 130.71,
+      "channelIds": []
+    },
+    {
+      "id": "oita",
+      "name": "大分",
+      "regionId": "oita",
+      "latitude": 33.24,
+      "longitude": 131.61,
+      "channelIds": []
+    },
+    {
+      "id": "miyazaki",
+      "name": "宮崎",
+      "regionId": "miyazaki",
+      "latitude": 31.91,
+      "longitude": 131.42,
+      "channelIds": []
+    },
+    {
+      "id": "kagoshima",
+      "name": "鹿児島",
+      "regionId": "kagoshima",
+      "latitude": 31.6,
+      "longitude": 130.56,
+      "channelIds": []
+    },
+    {
+      "id": "naha",
+      "name": "那覇",
+      "regionId": "okinawa",
+      "latitude": 26.21,
+      "longitude": 127.68,
+      "channelIds": []
+    }
+  ]
+}

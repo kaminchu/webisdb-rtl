@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="WebISDB-RTL">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2544"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <g fill="none" stroke="#4f9dff" stroke-width="20" stroke-linecap="round">
+    <path d="M150 190a150 150 0 0 1 212 0"/>
+    <path d="M196 240a86 86 0 0 1 120 0"/>
+  </g>
+  <circle cx="256" cy="296" r="26" fill="#4f9dff"/>
+  <rect x="96" y="330" width="320" height="140" rx="20" fill="#131a2e" stroke="#38456a" stroke-width="12"/>
+  <rect x="126" y="360" width="160" height="80" rx="8" fill="#3ddc97" opacity="0.85"/>
+  <rect x="306" y="360" width="80" height="16" rx="6" fill="#9aa6c4"/>
+  <rect x="306" y="392" width="80" height="16" rx="6" fill="#9aa6c4"/>
+</svg>
