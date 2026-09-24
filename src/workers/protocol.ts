@@ -61,9 +61,7 @@ export type ReceiverCommand =
   | { type: 'start' }
   | { type: 'stop' }
   | { type: 'close' }
-  | { type: 'discardBuffer' }
   | { type: 'setSpectrumEnabled'; enabled: boolean }
-  | { type: 'setDumpIq'; enabled: boolean }
 
 export interface SpectrumSnapshot {
   /** Power per FFT bin in dB. */
@@ -80,7 +78,6 @@ export type ReceiverEvent =
   | { type: 'spectrum'; spectrum: SpectrumSnapshot }
   | { type: 'tmcc'; tmcc: TmccInfo }
   | { type: 'ts'; data: Uint8Array }
-  | { type: 'iqDump'; data: Uint8Array }
   | { type: 'error'; error: WorkerError }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +88,6 @@ export type TsCommand =
   | { type: 'input'; data: Uint8Array }
   | { type: 'reset' }
   | { type: 'selectService'; serviceId: number }
-  | { type: 'setDumpTs'; enabled: boolean }
 
 export type TsEvent =
   | { type: 'pat'; section: PatSection }

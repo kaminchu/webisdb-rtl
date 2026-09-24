@@ -49,9 +49,6 @@ ctx.onmessage = (event: MessageEvent<TsCommand>) => {
         transport.selectService(command.serviceId)
         break
       }
-      case 'setDumpTs': {
-        break
-      }
     }
   } catch (error) {
     postError(error)

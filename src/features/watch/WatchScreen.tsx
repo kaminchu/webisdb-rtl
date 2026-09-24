@@ -3,11 +3,10 @@ import { openSidebar } from '../../app/navigation'
 import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import { OneSegPlayer } from '../../media'
-import type { PlayerStats } from '../../media/player'
 import type { AudioChannelMode } from '../../models/media'
 import { loadSettings, saveSettings } from '../../storage/settings'
-import { DebugScreen } from '../debug/DebugScreen'
 import { CompactGuide } from './CompactGuide'
+import { DebugOverlay } from './DebugOverlay'
 import { PlayerView } from './PlayerView'
 import { WatchControls } from './WatchControls'
 import { useDockedGuide } from './useDockedGuide'
@@ -17,13 +16,14 @@ export function WatchScreen() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const playerRef = useRef<OneSegPlayer | null>(null)
   const [overlayOpen, setOverlayOpen] = useState(false)
-  const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null)
+  const [connecting, setConnecting] = useState(false)
   const [playerError, setPlayerError] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState<string | null>(null)
   const [audioChannel, setAudioChannel] = useState<AudioChannelMode>(
     () => loadSettings().ui.audioChannel,
   )
   const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
-  const [showDebug] = useState(() => loadSettings().debug.showOverlay)
+  const [debugPrefs] = useState(() => loadSettings().debug)
   const docked = useDockedGuide()
 
   const sourceKind = useStore((s) => s.receiver.sourceKind)
@@ -37,9 +37,7 @@ export function WatchScreen() {
     const settings = loadSettings()
     player.setAudioChannel(settings.ui.audioChannel)
     player.setSubtitlesEnabled(settings.ui.subtitles)
-    const timer = window.setInterval(() => setPlayerStats(player.stats), 500)
     return () => {
-      window.clearInterval(timer)
       player.close()
       playerRef.current = null
       receiverController.setPlayer(null)
@@ -47,6 +45,27 @@ export function WatchScreen() {
   }, [])
 
   const connected = sourceKind !== 'none'
+
+  const connect = async () => {
+    if (connecting) return
+    setConnecting(true)
+    setConnectError(null)
+    try {
+      await receiverController.connectRtlSdr()
+    } catch (cause) {
+      setConnectError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const onStageClick = () => {
+    if (!connected) {
+      void connect()
+      return
+    }
+    setOverlayOpen((open) => !open)
+  }
 
   const changeAudio = (mode: AudioChannelMode) => {
     setAudioChannel(mode)
@@ -67,8 +86,13 @@ export function WatchScreen() {
       onPointerDown={() => playerRef.current?.resume()}
       onKeyDown={() => playerRef.current?.resume()}
     >
-      <div className={styles.stage} onClick={() => setOverlayOpen((open) => !open)}>
-        <PlayerView canvasRef={canvasRef} connected={connected} />
+      <div className={styles.stage} onClick={onStageClick}>
+        <PlayerView
+          canvasRef={canvasRef}
+          connected={connected}
+          connecting={connecting}
+          connectError={connectError}
+        />
 
         {overlayOpen && (
           <div
@@ -97,13 +121,13 @@ export function WatchScreen() {
               onToggleSubtitles={toggleSubtitles}
             />
 
-            {showDebug && (
+            {debugPrefs.showOverlay && (
               <div className={styles.debugLayer} onClick={(event) => event.stopPropagation()}>
-                <DebugScreen />
-                <p className={styles.statsLine}>
-                  フレーム {playerStats?.videoFramesDecoded ?? 0} / 音声{' '}
-                  {playerStats?.audioBuffersQueued ?? 0} / 破棄 {playerStats?.dropped ?? 0}
-                </p>
+                <DebugOverlay
+                  buffer={debugPrefs.overlayBuffer}
+                  quality={debugPrefs.overlayQuality}
+                  spectrum={debugPrefs.overlaySpectrum}
+                />
               </div>
             )}
 

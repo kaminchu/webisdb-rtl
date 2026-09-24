@@ -3,10 +3,10 @@
  * WebUSB IQ source, the media player, and mirrors everything into the app store.
  */
 import { channelToFrequencyHz, frequencyToChannel } from '../models/channel'
-import type { IqMetadata } from '../iq/iqFormat'
 import type { IQSource } from '../iq/IQSource'
 import { RTLSDRSource } from '../iq/RTLSDRSource'
-import { requestRtlSdrDevice } from '../driver/rtlsdr/usbTransport'
+import { findAuthorizedRtlSdrDevice, requestRtlSdrDevice } from '../driver/rtlsdr/usbTransport'
+import type { UsbTransport, WebUsbTransport } from '../driver/rtlsdr/usbTransport'
 import type { OneSegPlayer } from '../media/player'
 import type {
   IqChunkInit,
@@ -15,8 +15,6 @@ import type {
   TsCommand,
   TsEvent,
 } from '../workers/protocol'
-import { ByteRecorder } from '../dump/recorder'
-import { downloadBytes, downloadText, timestampSlug } from '../dump/download'
 import { createEmptyDiagnostics, store } from './store'
 import { loadSettings, saveSettings } from '../storage/settings'
 import { receivedServices } from './serviceInfo'
@@ -36,10 +34,6 @@ export class ReceiverController {
   #unsubscribeSamples: (() => void) | null = null
   #unsubscribeState: (() => void) | null = null
   #started = false
-  #iqRecorder = new ByteRecorder()
-  #tsRecorder = new ByteRecorder()
-  #iqDumpEnabled = false
-  #tsDumpEnabled = false
 
   constructor(options: ReceiverControllerOptions = {}) {
     this.#player = options.player ?? null
@@ -87,20 +81,22 @@ export class ReceiverController {
 
   // --- sources -------------------------------------------------------------
 
-  async connectRtlSdr(): Promise<void> {
+  async connectRtlSdr(transport?: UsbTransport): Promise<void> {
     const settings = loadSettings()
     await this.#detachSource()
-    const transport = await requestRtlSdrDevice()
-    const source = new RTLSDRSource(transport, {
+    const usbTransport = transport ?? (await requestRtlSdrDevice())
+    const configured = store.getState().configuredChannels
+    const fallbackChannel = settings.lastChannel ?? configured[0]?.physicalChannel ?? 19
+    const source = new RTLSDRSource(usbTransport, {
       sampleRate: settings.sampleRate ?? DEFAULT_SAMPLE_RATE,
-      centerFrequency: settings.lastFrequency ?? channelToFrequencyHz(settings.lastChannel ?? 19),
+      centerFrequency: settings.lastFrequency ?? channelToFrequencyHz(fallbackChannel),
       gainDb: settings.gainDb ?? DEFAULT_GAIN,
     })
     try {
       await source.open()
     } catch (error) {
       await source.close().catch(() => undefined)
-      await transport.close().catch(() => undefined)
+      await usbTransport.close().catch(() => undefined)
       throw error
     }
     this.#attachSource(source)
@@ -132,42 +128,25 @@ export class ReceiverController {
     this.#started = source.state === 'running'
   }
 
-  async openIqFile(
-    data: Uint8Array | ArrayBuffer,
-    metadata: IqMetadata,
-    label?: string,
-  ): Promise<void> {
-    await this.#detachSource()
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
-    const buffer = bytes.slice().buffer as ArrayBuffer
-    store.setState((prev) => ({
-      receiver: {
-        ...prev.receiver,
-        sourceKind: 'iq-file',
-        label: label ?? 'IQ ファイル',
-        state: 'opening',
-        sampleRate: metadata.sampleRate,
-        frequency: metadata.centerFrequency,
-        channel: frequencyToChannel(metadata.centerFrequency),
-        error: null,
-      },
-    }))
-    this.#postReceiver(
-      {
-        type: 'init',
-        options: {
-          source: { kind: 'iq-file', metadata, data: buffer },
-          frequency: metadata.centerFrequency,
-          sampleRate: metadata.sampleRate,
-          gainDb: metadata.gainDb ?? 'auto',
-          ppm: metadata.ppm,
-          spectrumEnabled: true,
-        },
-      },
-      [buffer],
-    )
-    this.#postReceiver({ type: 'start' })
-    this.#started = true
+  /**
+   * Reconnect to an already-authorized RTL-SDR without a user gesture and tune
+   * the last watched channel. Returns false when no authorized device exists.
+   */
+  async autoConnectRtlSdr(): Promise<boolean> {
+    if (this.#started) return true
+    let transport: WebUsbTransport | null = null
+    try {
+      transport = await findAuthorizedRtlSdrDevice()
+    } catch {
+      return false
+    }
+    if (!transport) return false
+    try {
+      await this.connectRtlSdr(transport)
+      return true
+    } catch {
+      return false
+    }
   }
 
   #attachSource(source: IQSource): void {
@@ -175,7 +154,6 @@ export class ReceiverController {
     this.#unsubscribeSamples = source.onSamples((chunk) => {
       if (chunk.endOfStream) return
       const copy = (chunk.data as Uint8Array).slice()
-      if (this.#iqDumpEnabled) this.#iqRecorder.push(copy)
       const init: IqChunkInit = {
         data: copy.buffer,
         format: chunk.format,
@@ -263,13 +241,6 @@ export class ReceiverController {
     this.#started = false
   }
 
-  discardBuffer(): void {
-    this.#postReceiver({ type: 'discardBuffer' })
-    this.#postTs({ type: 'reset' })
-    this.#player?.reset()
-    store.setState({ diagnostics: createEmptyDiagnostics() })
-  }
-
   selectService(serviceId: number | null): void {
     this.#player?.reset()
     if (serviceId !== null) this.#postTs({ type: 'selectService', serviceId })
@@ -292,48 +263,6 @@ export class ReceiverController {
 
   get running(): boolean {
     return this.#started
-  }
-
-  // --- dump (要件定義書 33) -------------------------------------------------
-
-  setIqDumpEnabled(enabled: boolean): void {
-    this.#iqDumpEnabled = enabled
-    if (!enabled) this.#iqRecorder.clear()
-  }
-
-  setTsDumpEnabled(enabled: boolean): void {
-    this.#tsDumpEnabled = enabled
-    if (!enabled) this.#tsRecorder.clear()
-  }
-
-  get dumpSizes(): { iqBytes: number; tsBytes: number } {
-    return { iqBytes: this.#iqRecorder.byteLength, tsBytes: this.#tsRecorder.byteLength }
-  }
-
-  saveIqDump(): void {
-    const stamp = timestampSlug()
-    const base = `iq-${stamp}`
-    const bytes = this.#iqRecorder.take()
-    downloadBytes(`${base}.iq`, bytes)
-    const receiver = store.getState().receiver
-    const metadata: IqMetadata = {
-      version: 1,
-      format: 'u8',
-      sampleRate: receiver.sampleRate,
-      centerFrequency: receiver.frequency,
-      gainDb: receiver.gainDb,
-      ppm: receiver.ppm,
-      timestamp: new Date().toISOString(),
-      device: receiver.label,
-      tuner: 'unknown',
-      physicalChannel: receiver.channel ?? undefined,
-    }
-    downloadText(`${base}.iq.json`, JSON.stringify(metadata, null, 2))
-  }
-
-  saveTsDump(): void {
-    const bytes = this.#tsRecorder.take()
-    downloadBytes(`stream-${timestampSlug()}.ts`, bytes, 'video/mp2t')
   }
 
   dispose(): void {
@@ -361,7 +290,6 @@ export class ReceiverController {
         store.setState((prev) => ({ diagnostics: { ...prev.diagnostics, tmcc: event.tmcc } }))
         break
       case 'ts':
-        if (this.#tsDumpEnabled) this.#tsRecorder.push(event.data)
         this.#postTs({ type: 'input', data: event.data }, [event.data.buffer])
         break
       case 'error':

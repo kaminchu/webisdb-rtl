@@ -1,11 +1,11 @@
 import { useStore } from '../../app/store'
-import type { Event } from '../../models'
 import { formatJstTime } from '../epg/time'
 import { useEpg } from '../epg/useEpg'
+import type { ChannelGuideEntry } from '../epg/useEpg'
 import styles from './CompactGuide.module.css'
 
 const PX_PER_MINUTE = 6
-const LABEL_WIDTH = 96
+const LABEL_WIDTH = 104
 const TICK_MINUTES = 30
 
 export interface CompactGuideProps {
@@ -13,8 +13,8 @@ export interface CompactGuideProps {
 }
 
 export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
-  const { guide, selectProgram } = useEpg(2)
-  const selectedServiceId = useStore((s) => s.diagnostics.selectedServiceId)
+  const { guide, selectChannel } = useEpg(2)
+  const currentChannel = useStore((s) => s.receiver.channel)
 
   const nowMs = guide.generatedAt.getTime()
   const rangeStart = guide.rangeStart.getTime()
@@ -32,13 +32,13 @@ export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
     })
   }
 
-  const select = (event: Event) => {
-    selectProgram(event)
+  const select = (entry: ChannelGuideEntry) => {
+    selectChannel(entry)
     onProgramSelect?.()
   }
 
-  if (guide.groups.length === 0) {
-    return <div className={styles.empty}>番組情報がありません</div>
+  if (guide.entries.length === 0) {
+    return <div className={styles.empty}>チャンネルが設定されていません</div>
   }
 
   return (
@@ -56,48 +56,46 @@ export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
           </div>
         </div>
 
-        {guide.groups.map((group) => {
-          const active = selectedServiceId === group.serviceId
-          const running =
-            group.events.find(
-              (event) =>
-                event.startTime.getTime() <= nowMs &&
-                event.startTime.getTime() + event.duration * 1000 > nowMs,
-            ) ?? group.events[0]
+        {guide.entries.map((entry) => {
+          const active = currentChannel === entry.physicalChannel
           return (
-            <div key={group.serviceId} className={styles.row}>
+            <div key={entry.physicalChannel} className={styles.row}>
               <button
                 type="button"
                 className={active ? styles.labelActive : styles.label}
                 style={{ width: LABEL_WIDTH }}
-                onClick={() => running && select(running)}
-                disabled={!running}
+                onClick={() => select(entry)}
               >
-                {group.serviceName}
+                <span className={styles.labelChannel}>ch {entry.physicalChannel}</span>
+                <span className={styles.labelName}>{entry.serviceName}</span>
               </button>
               <div className={styles.track} style={{ width: totalWidth }}>
-                {group.events.map((event) => {
-                  const start = event.startTime.getTime()
-                  const isRunning = start <= nowMs && start + event.duration * 1000 > nowMs
-                  const left = ((start - rangeStart) / 60_000) * PX_PER_MINUTE
-                  const width = Math.max(24, (event.duration / 60) * PX_PER_MINUTE - 2)
-                  return (
-                    <button
-                      key={event.eventId}
-                      type="button"
-                      className={[styles.program, isRunning ? styles.programRunning : '']
-                        .filter(Boolean)
-                        .join(' ')}
-                      style={{ left, width }}
-                      title={`${formatJstTime(start)} ${event.title}`}
-                      onClick={() => select(event)}
-                    >
-                      <span className={styles.programTitle}>
-                        {event.title || '（タイトルなし）'}
-                      </span>
-                    </button>
-                  )
-                })}
+                {entry.events.length === 0 ? (
+                  <span className={styles.noProgram}>番組情報なし</span>
+                ) : (
+                  entry.events.map((event) => {
+                    const start = event.startTime.getTime()
+                    const isRunning = start <= nowMs && start + event.duration * 1000 > nowMs
+                    const left = ((start - rangeStart) / 60_000) * PX_PER_MINUTE
+                    const width = Math.max(24, (event.duration / 60) * PX_PER_MINUTE - 2)
+                    return (
+                      <button
+                        key={event.eventId}
+                        type="button"
+                        className={[styles.program, isRunning ? styles.programRunning : '']
+                          .filter(Boolean)
+                          .join(' ')}
+                        style={{ left, width }}
+                        title={`${formatJstTime(start)} ${event.title}`}
+                        onClick={() => select(entry)}
+                      >
+                        <span className={styles.programTitle}>
+                          {event.title || '（タイトルなし）'}
+                        </span>
+                      </button>
+                    )
+                  })
+                )}
               </div>
             </div>
           )

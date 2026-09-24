@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { navigate } from '../../app/navigation'
-import { Screen } from '../../app/store'
+import { Screen, useStore } from '../../app/store'
 import { Button } from '../../components/Button'
-import { Panel } from '../../components/Panel'
+import { MenuButton } from '../shell/MenuButton'
 import type { Event } from '../../models'
+import type { ChannelGuideEntry } from './useEpg'
 import { ProgramModal } from './ProgramModal'
 import { formatDuration, formatJstDateTime, formatJstRange } from './time'
 import { useEpg } from './useEpg'
@@ -11,53 +12,62 @@ import styles from './EpgScreen.module.css'
 
 interface SelectedProgram {
   event: Event
-  serviceName: string
+  entry: ChannelGuideEntry
 }
 
 export function EpgScreen() {
-  const { guide, loading, selectProgram, refresh } = useEpg(6)
+  const { guide, loading, selectChannel, refresh } = useEpg(6)
+  const currentChannel = useStore((s) => s.receiver.channel)
   const [selected, setSelected] = useState<SelectedProgram | null>(null)
   const nowMs = guide.generatedAt.getTime()
 
   const watch = () => {
     if (!selected) return
-    selectProgram(selected.event)
+    selectChannel(selected.entry)
     setSelected(null)
     navigate(Screen.Watch)
   }
 
   return (
     <div className={styles.page}>
-      <Panel
-        title="番組表"
-        actions={
-          <Button size="sm" onClick={refresh} disabled={loading}>
-            更新
-          </Button>
-        }
-      >
-        <div className={styles.stack}>
-          <div className={styles.muted}>
-            表示範囲 {formatJstDateTime(guide.rangeStart)} 〜 {formatJstDateTime(guide.rangeEnd)}（
-            {guide.total} 番組）
-          </div>
+      <header className={styles.topbar}>
+        <MenuButton />
+        <h1 className={styles.heading}>番組表</h1>
+        <Button size="sm" onClick={refresh} disabled={loading}>
+          更新
+        </Button>
+      </header>
 
-          {loading ? (
-            <div className={styles.empty}>番組情報を読み込んでいます…</div>
-          ) : guide.groups.length === 0 ? (
-            <div className={styles.empty}>
-              番組情報がありません。受信を開始するかチャンネルスキャンを実行してください。
-            </div>
-          ) : (
-            <div className={styles.groups}>
-              {guide.groups.map((group) => (
-                <section key={group.serviceId} className={styles.group}>
-                  <h3 className={styles.serviceName}>
-                    {group.serviceName}
-                    <span className={styles.serviceId}>#{group.serviceId}</span>
-                  </h3>
+      <div className={styles.muted}>
+        表示範囲 {formatJstDateTime(guide.rangeStart)} 〜 {formatJstDateTime(guide.rangeEnd)}（
+        {guide.total} 番組）
+      </div>
+
+      {loading ? (
+        <div className={styles.empty}>番組情報を読み込んでいます…</div>
+      ) : guide.entries.length === 0 ? (
+        <div className={styles.empty}>
+          チャンネルが設定されていません。設定画面のチャンネル設定から選択してください。
+        </div>
+      ) : (
+        <div className={styles.groups}>
+          {guide.entries.map((entry) => {
+            const active = currentChannel === entry.physicalChannel
+            return (
+              <section key={entry.physicalChannel} className={styles.group}>
+                <button
+                  type="button"
+                  className={active ? styles.channelHeaderActive : styles.channelHeader}
+                  onClick={() => selectChannel(entry)}
+                >
+                  <span className={styles.channelNumber}>ch {entry.physicalChannel}</span>
+                  <span className={styles.channelName}>{entry.serviceName}</span>
+                </button>
+                {entry.events.length === 0 ? (
+                  <div className={styles.noProgram}>番組情報なし</div>
+                ) : (
                   <ul className={styles.programs}>
-                    {group.events.map((event) => {
+                    {entry.events.map((event) => {
                       const ended = event.startTime.getTime() + event.duration * 1000 < nowMs
                       const classes = [
                         styles.program,
@@ -71,7 +81,7 @@ export function EpgScreen() {
                           <button
                             type="button"
                             className={classes}
-                            onClick={() => setSelected({ event, serviceName: group.serviceName })}
+                            onClick={() => setSelected({ event, entry })}
                             title={event.description}
                           >
                             <span className={styles.programTime}>
@@ -89,19 +99,17 @@ export function EpgScreen() {
                       )
                     })}
                   </ul>
-                </section>
-              ))}
-            </div>
-          )}
-
-          <div className={styles.muted}>番組を選択すると詳細が表示されます。</div>
+                )}
+              </section>
+            )
+          })}
         </div>
-      </Panel>
+      )}
 
       {selected && (
         <ProgramModal
           event={selected.event}
-          serviceName={selected.serviceName}
+          serviceName={selected.entry.serviceName}
           onClose={() => setSelected(null)}
           onWatch={watch}
         />

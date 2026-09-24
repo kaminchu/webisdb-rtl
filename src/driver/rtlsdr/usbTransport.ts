@@ -79,6 +79,17 @@ export async function requestRtlSdrDevice(): Promise<WebUsbTransport> {
   return new WebUsbTransport(device)
 }
 
+/**
+ * First already-authorized RTL-SDR device. Unlike `requestDevice` this needs no
+ * user gesture, so the app can reconnect automatically on open.
+ */
+export async function findAuthorizedRtlSdrDevice(): Promise<WebUsbTransport | null> {
+  const usb = getWebUsb()
+  const devices = await usb.getDevices()
+  const device = devices.find((candidate) => candidate.vendorId === RTL_SDR_VENDOR_ID)
+  return device ? new WebUsbTransport(device) : null
+}
+
 function toBytes(result: UsbInTransferResult): Uint8Array {
   if (result.status !== 'ok') throw new Error(`USB transfer failed: ${result.status}`)
   const view = result.data

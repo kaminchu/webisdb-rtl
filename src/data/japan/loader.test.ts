@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { channelToFrequencyHz } from '../../models/channel'
 import {
   channelData,
+  configuredChannelsForTransmitter,
+  findNearestTransmitter,
   getChannelsByTransmitter,
   getRegion,
   getRegionsGeoIndex,
@@ -97,6 +99,19 @@ describe('yahiko transmitter', () => {
     expect(getStationsByChannel('yahiko-19').map((s) => s.name)).toEqual(['NST新潟総合テレビ'])
     expect(getStationsByChannel('yahiko-23').map((s) => s.network)).toEqual(['ANN'])
     expect(getStationsByChannel('yahiko-26').map((s) => s.network)).toEqual(['NNN'])
+  })
+})
+
+describe('channel configuration helpers', () => {
+  it('lists transmitter channels with station names', () => {
+    const channels = configuredChannelsForTransmitter('yahiko')
+    expect(channels.map((channel) => channel.physicalChannel)).toEqual([13, 15, 17, 19, 23, 26])
+    expect(channels[0].name).toBe('NHK Eテレ')
+    expect(channels[0].channelId).toBe('yahiko-13')
+  })
+
+  it('finds the nearest transmitter by coordinate', () => {
+    expect(findNearestTransmitter(37.55, 138.83)?.id).toBe('yahiko')
   })
 })
 

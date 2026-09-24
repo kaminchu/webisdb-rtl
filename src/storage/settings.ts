@@ -15,7 +15,12 @@ export interface AppSettings {
   gainDb: number | null
   sampleRate: number | null
   ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
-  debug: { spectrum: boolean; showPsi: boolean; showPidList: boolean; showOverlay: boolean }
+  debug: {
+    showOverlay: boolean
+    overlayBuffer: boolean
+    overlayQuality: boolean
+    overlaySpectrum: boolean
+  }
 }
 
 /** Deep-partial patch accepted by `saveSettings`; nested `ui`/`debug` merge field-wise. */
@@ -34,7 +39,12 @@ export function defaultSettings(): AppSettings {
     gainDb: null,
     sampleRate: null,
     ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
-    debug: { spectrum: false, showPsi: false, showPidList: false, showOverlay: false },
+    debug: {
+      showOverlay: false,
+      overlayBuffer: false,
+      overlayQuality: false,
+      overlaySpectrum: false,
+    },
   }
 }
 
@@ -107,10 +117,10 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
       audioChannel: audioChannel ?? base.ui.audioChannel,
     },
     debug: {
-      spectrum: asBoolean(debug.spectrum, base.debug.spectrum),
-      showPsi: asBoolean(debug.showPsi, base.debug.showPsi),
-      showPidList: asBoolean(debug.showPidList, base.debug.showPidList),
       showOverlay: asBoolean(debug.showOverlay, base.debug.showOverlay),
+      overlayBuffer: asBoolean(debug.overlayBuffer, base.debug.overlayBuffer),
+      overlayQuality: asBoolean(debug.overlayQuality, base.debug.overlayQuality),
+      overlaySpectrum: asBoolean(debug.overlaySpectrum, base.debug.overlaySpectrum),
     },
   }
 }

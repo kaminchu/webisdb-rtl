@@ -1,8 +1,7 @@
 import { useEffect } from 'react'
-import { useStore, Screen } from './app/store'
+import { store, useStore, Screen } from './app/store'
 import { navigate, startHashNavigation } from './app/navigation'
-import { loadStoredScanResults } from './app/scanController'
-import { loadSettings } from './storage/settings'
+import { receiverController } from './app/receiverController'
 import { AppSidebar } from './features/shell/AppSidebar'
 import styles from './App.module.css'
 import { WatchScreen } from './features/watch/WatchScreen'
@@ -28,12 +27,11 @@ export function App() {
   useEffect(() => {
     const dispose = startHashNavigation()
     void (async () => {
-      const settings = loadSettings()
-      if (settings.lastRegionId) {
-        const results = await loadStoredScanResults()
-        if (results.length > 0) return
+      if (store.getState().configuredChannels.length === 0) {
+        navigate(Screen.Settings)
+        return
       }
-      navigate(Screen.Settings)
+      await receiverController.autoConnectRtlSdr()
     })()
     return dispose
   }, [])

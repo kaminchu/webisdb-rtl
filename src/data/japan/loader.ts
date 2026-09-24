@@ -8,6 +8,7 @@ import regionsFile from './regions.json'
 import stationsFile from './stations.json'
 import transmittersFile from './transmitters.json'
 import { channelToFrequencyHz } from '../../models/channel'
+import type { ConfiguredChannel } from '../../models/channel'
 import type {
   ChannelDataFile,
   ChannelEntry,
@@ -119,6 +120,55 @@ export function getStationsByChannel(channelId: string): StationEntry[] {
 
 export function getRegionsGeoIndex(): RegionGeoEntry[] {
   return regionGeoIndex
+}
+
+/** Channel configurations offered by a transmitter, including station names. */
+export function configuredChannelsForTransmitter(transmitterId: string): ConfiguredChannel[] {
+  return getChannelsByTransmitter(transmitterId)
+    .map((channel) => {
+      const station = getStationsByChannel(channel.id)[0]
+      const configured: ConfiguredChannel = {
+        physicalChannel: channel.physicalChannel,
+        channelId: channel.id,
+      }
+      if (station) {
+        configured.name = station.name
+        if (station.serviceId !== undefined) configured.serviceId = station.serviceId
+      }
+      return configured
+    })
+    .toSorted((a, b) => a.physicalChannel - b.physicalChannel)
+}
+
+function toRadians(degrees: number): number {
+  return (degrees * Math.PI) / 180
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const earthRadiusKm = 6371
+  const dLat = toRadians(lat2 - lat1)
+  const dLon = toRadians(lon2 - lon1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(dLon / 2) ** 2
+  return 2 * earthRadiusKm * Math.asin(Math.sqrt(a))
+}
+
+/** Nearest bundled transmitter to a coordinate, used for GPS auto-selection. */
+export function findNearestTransmitter(
+  latitude: number,
+  longitude: number,
+): Transmitter | undefined {
+  let nearest: Transmitter | undefined
+  let nearestKm = Number.POSITIVE_INFINITY
+  for (const transmitter of channelData.transmitters.items) {
+    const distanceKm = haversineKm(latitude, longitude, transmitter.latitude, transmitter.longitude)
+    if (distanceKm < nearestKm) {
+      nearestKm = distanceKm
+      nearest = transmitter
+    }
+  }
+  return nearest
 }
 
 function assertFile<T>(label: string, file: ChannelDataFile<T>): void {

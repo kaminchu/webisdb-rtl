@@ -1,8 +1,6 @@
-import { Button } from '../../components/Button'
 import { Panel } from '../../components/Panel'
 import { ProgressBar } from '../../components/ProgressBar'
 import { StatRow } from '../../components/StatRow'
-import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import styles from './ReceiverPanels.module.css'
 
@@ -30,9 +28,6 @@ export function BufferPanel() {
           <StatRow label="サイズ" value={formatBytes(buffer.bufferedBytes)} />
           <StatRow label="ドロップ" value={buffer.droppedSamples.toLocaleString()} />
         </div>
-        <Button type="button" onClick={() => receiverController.discardBuffer()}>
-          LIVE に戻る / バッファを破棄
-        </Button>
       </div>
     </Panel>
   )

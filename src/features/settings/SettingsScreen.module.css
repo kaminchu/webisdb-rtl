@@ -1,5 +1,20 @@
 .page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
   padding: var(--space-4);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.heading {
+  flex: 1;
+  margin: 0;
+  font-size: 18px;
 }
 
 .grid {
@@ -7,6 +22,124 @@
   gap: var(--space-4);
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   align-items: start;
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.nested {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-left: var(--space-5);
+  border-left: 2px solid var(--color-border);
+}
+
+.segmented {
+  display: flex;
+  gap: var(--space-1);
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.segment,
+.segmentActive {
+  flex: 1;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.segmentActive {
+  background: color-mix(in srgb, var(--color-accent) 22%, var(--color-bg-input));
+  color: var(--color-text);
+}
+
+.checkList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 240px;
+  overflow: auto;
+}
+
+.checkRow {
+  display: grid;
+  grid-template-columns: auto 64px 1fr;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkRow:hover {
+  background: var(--color-bg-input);
+}
+
+.checkChannel {
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.checkName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configuredHeader {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-bg-input);
+  font-size: 12px;
+}
+
+.chipRemove {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.chipRemove:hover {
+  background: color-mix(in srgb, var(--color-bad) 30%, transparent);
+  color: var(--color-text);
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-bad);
 }
 
 .stack {

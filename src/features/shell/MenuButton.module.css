@@ -1,0 +1,16 @@
+.button {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-input);
+  color: var(--color-text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.button:hover {
+  border-color: var(--color-accent);
+}

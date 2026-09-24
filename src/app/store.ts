@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { IQSourceState, IQSourceKind } from '../iq/IQSource'
-import type { ReceiverStats, Service } from '../models'
+import type { ConfiguredChannel, ReceiverStats, Service } from '../models'
 import type { TmccInfo } from '../models/tmcc'
 import type {
   EitSection,
@@ -13,6 +13,7 @@ import type {
   TsStatistics,
 } from '../models/si'
 import { emptyBufferMetrics, emptyReceptionQuality, emptyThroughput } from '../models'
+import { loadConfiguredChannels } from '../storage/channels'
 
 export const Screen = {
   Watch: 'watch',
@@ -61,6 +62,8 @@ export interface SpectrumSlice {
 export interface AppState {
   screen: Screen
   sidebarOpen: boolean
+  /** Channels enabled in the channel settings, in ascending order. */
+  configuredChannels: ConfiguredChannel[]
   receiver: ReceiverSlice
   diagnostics: DiagnosticsSlice
   spectrum: SpectrumSlice
@@ -88,6 +91,7 @@ export function createInitialState(): AppState {
   return {
     screen: Screen.Watch,
     sidebarOpen: false,
+    configuredChannels: loadConfiguredChannels(),
     receiver: {
       sourceKind: 'none',
       label: '未接続',

@@ -1,11 +1,20 @@
 .page {
-  padding: var(--space-4);
-}
-
-.stack {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.heading {
+  flex: 1;
+  margin: 0;
+  font-size: 18px;
 }
 
 .muted {
@@ -25,6 +34,7 @@
   display: grid;
   gap: var(--space-4);
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  align-items: start;
 }
 
 .group {
@@ -33,20 +43,47 @@
   gap: var(--space-2);
 }
 
-.serviceName {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+.channelHeader,
+.channelHeaderActive {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
 }
 
-.serviceId {
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 400;
+.channelHeader:hover {
+  border-color: var(--color-accent);
+}
+
+.channelHeaderActive {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-bg-elevated));
+}
+
+.channelNumber {
   font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.channelName {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.noProgram {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
 }
 
 .programs {

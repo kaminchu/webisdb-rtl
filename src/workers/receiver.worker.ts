@@ -244,13 +244,9 @@ const handlers: {
     pipeline?.dispose()
     pipeline = null
   },
-  discardBuffer: () => {
-    pipeline?.discardBuffer()
-  },
   setSpectrumEnabled: (command) => {
     spectrumEnabled = command.enabled
   },
-  setDumpIq: () => {},
 }
 
 ctx.onmessage = (event: MessageEvent<ReceiverCommand>) => {

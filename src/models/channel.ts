@@ -22,6 +22,18 @@ export interface Frequency {
   hz: number
 }
 
+/** A channel the viewer has enabled in the channel settings. */
+export interface ConfiguredChannel {
+  /** Physical channel number (13..52 normally). */
+  physicalChannel: number
+  /** Station / broadcaster name for display, if known. */
+  name?: string
+  /** Service id used to attach EIT events, if known. */
+  serviceId?: number
+  /** Bundled channel-data id when configured from a region / transmitter. */
+  channelId?: string
+}
+
 export interface PhysicalChannel {
   /** Physical channel number (13..52 normally). */
   channel: number

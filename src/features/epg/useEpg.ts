@@ -1,29 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { receiverController } from '../../app/receiverController'
-import { openAppKeyValueStore } from '../../app/scanController'
+import { loadStoredScanResults, openAppKeyValueStore } from '../../app/scanController'
 import { useStore } from '../../app/store'
-import { getChannel, loadStations } from '../../data/japan/loader'
-import type { Event, Service } from '../../models'
+import type { ConfiguredChannel, Event, Service } from '../../models'
 import { EventRepository, pruneExpiredEvents } from '../../storage'
 
 /** Keep ended programs around briefly so the guide can show the recent past. */
 export const EPG_RETENTION_MS = 3 * 60 * 60 * 1000
 
-export interface ProgramGuideGroup {
-  serviceId: number
+export interface ChannelGuideEntry {
+  physicalChannel: number
+  serviceId: number | null
   serviceName: string
   events: Event[]
 }
 
-export interface ProgramGuide {
+export interface ChannelGuide {
   generatedAt: Date
   rangeStart: Date
   rangeEnd: Date
-  groups: ProgramGuideGroup[]
+  entries: ChannelGuideEntry[]
   total: number
 }
 
-export interface ProgramGuideOptions {
+export interface ChannelGuideOptions {
   hours?: number
   pastHours?: number
   now?: Date
@@ -37,68 +37,83 @@ function preferEvent(candidate: Event, existing: Event): boolean {
   return candidate.title.length > existing.title.length
 }
 
-/** Merge live and stored events into a per-service guide for the given window. */
-export function buildProgramGuide(
-  events: Event[],
-  services: Service[],
-  options: ProgramGuideOptions = {},
-): ProgramGuide {
-  const now = options.now ?? new Date()
-  const hours = options.hours ?? 6
-  const pastHours = options.pastHours ?? 1
-  const rangeStart = new Date(now.getTime() - pastHours * 3_600_000)
-  const rangeEnd = new Date(now.getTime() + hours * 3_600_000)
-
+function mergeEvents(events: Event[]): Map<string, Event> {
   const merged = new Map<string, Event>()
   for (const event of events) {
     const key = `${event.serviceId}:${event.eventId}`
     const existing = merged.get(key)
     if (!existing || preferEvent(event, existing)) merged.set(key, event)
   }
+  return merged
+}
 
-  const names = new Map<number, string>()
-  for (const service of services) names.set(service.serviceId, service.name)
+/**
+ * Build a channel-centric guide from the configured channels. Channels with no
+ * matching events are kept so the guide is usable before EPG data arrives.
+ */
+export function buildChannelGuide(
+  channels: ConfiguredChannel[],
+  events: Event[],
+  serviceNames: ReadonlyMap<number, string>,
+  serviceIdsByChannel: ReadonlyMap<number, number[]>,
+  options: ChannelGuideOptions = {},
+): ChannelGuide {
+  const now = options.now ?? new Date()
+  const hours = options.hours ?? 6
+  const pastHours = options.pastHours ?? 1
+  const rangeStart = new Date(now.getTime() - pastHours * 3_600_000)
+  const rangeEnd = new Date(now.getTime() + hours * 3_600_000)
+  const merged = mergeEvents(events)
 
-  const groups = new Map<number, ProgramGuideGroup>()
+  const entries: ChannelGuideEntry[] = []
   let total = 0
-  for (const event of merged.values()) {
-    const start = event.startTime.getTime()
-    const end = start + event.duration * 1000
-    if (end < rangeStart.getTime() || start > rangeEnd.getTime()) continue
-    let group = groups.get(event.serviceId)
-    if (!group) {
-      group = {
-        serviceId: event.serviceId,
-        serviceName: names.get(event.serviceId) ?? `サービス ${event.serviceId}`,
-        events: [],
-      }
-      groups.set(event.serviceId, group)
+  for (const channel of channels) {
+    const ids = new Set<number>()
+    if (channel.serviceId !== undefined) ids.add(channel.serviceId)
+    for (const id of serviceIdsByChannel.get(channel.physicalChannel) ?? []) ids.add(id)
+
+    const channelEvents: Event[] = []
+    for (const event of merged.values()) {
+      if (!ids.has(event.serviceId)) continue
+      const start = event.startTime.getTime()
+      const end = start + event.duration * 1000
+      if (end < rangeStart.getTime() || start > rangeEnd.getTime()) continue
+      channelEvents.push(event)
     }
-    group.events.push(event)
-    total++
+    channelEvents.sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+
+    const primaryId = channel.serviceId ?? [...ids][0] ?? null
+    const serviceName =
+      channel.name ??
+      (primaryId !== null ? serviceNames.get(primaryId) : undefined) ??
+      `ch ${channel.physicalChannel}`
+
+    entries.push({
+      physicalChannel: channel.physicalChannel,
+      serviceId: primaryId,
+      serviceName,
+      events: channelEvents,
+    })
+    total += channelEvents.length
   }
 
-  const sortedGroups = [...groups.values()].toSorted((a, b) => a.serviceId - b.serviceId)
-  for (const group of sortedGroups) {
-    group.events = group.events.toSorted((a, b) => a.startTime.getTime() - b.startTime.getTime())
-  }
-
-  return { generatedAt: now, rangeStart, rangeEnd, groups: sortedGroups, total }
+  return { generatedAt: now, rangeStart, rangeEnd, entries, total }
 }
 
 export interface EpgState {
-  guide: ProgramGuide
-  services: Service[]
+  guide: ChannelGuide
   loading: boolean
-  resolveChannel(serviceId: number): number | null
-  selectProgram(event: Event): void
+  selectChannel(entry: ChannelGuideEntry): void
   refresh(): void
 }
 
 export function useEpg(hours = 6): EpgState {
+  const channels = useStore((state) => state.configuredChannels)
   const eit = useStore((state) => state.diagnostics.eit)
-  const services = useStore((state) => state.diagnostics.services)
+  const liveServices = useStore((state) => state.diagnostics.services)
+  const liveChannel = useStore((state) => state.receiver.channel)
   const [storedEvents, setStoredEvents] = useState<Event[]>([])
+  const [scanServices, setScanServices] = useState<Map<number, Service[]>>(new Map())
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(() => new Date())
 
@@ -109,6 +124,17 @@ export function useEpg(hours = 6): EpgState {
       setStoredEvents(await new EventRepository(store).queryEvents({}))
     } catch {
       // storage unavailable; live EIT is still shown
+    }
+    try {
+      const byChannel = new Map<number, Service[]>()
+      for (const result of await loadStoredScanResults()) {
+        if (!result.services || result.services.length === 0) continue
+        const merged = [...(byChannel.get(result.physicalChannel) ?? []), ...result.services]
+        byChannel.set(result.physicalChannel, merged)
+      }
+      setScanServices(byChannel)
+    } catch {
+      // scan results unavailable
     }
   }, [])
 
@@ -143,56 +169,47 @@ export function useEpg(hours = 6): EpgState {
     }
   }, [eit, reload])
 
-  const channelByServiceId = useMemo(() => {
-    const map = new Map<number, number>()
-    for (const station of loadStations()) {
-      if (station.serviceId === undefined) continue
-      const channel = getChannel(station.channelId)
-      if (channel) map.set(station.serviceId, channel.physicalChannel)
+  const serviceNames = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const service of liveServices) map.set(service.serviceId, service.name)
+    for (const services of scanServices.values()) {
+      for (const service of services)
+        if (!map.has(service.serviceId)) map.set(service.serviceId, service.name)
     }
     return map
-  }, [])
+  }, [liveServices, scanServices])
 
-  const channelByName = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const station of loadStations()) {
-      const channel = getChannel(station.channelId)
-      if (channel) map.set(station.name, channel.physicalChannel)
+  const serviceIdsByChannel = useMemo(() => {
+    const map = new Map<number, number[]>()
+    for (const channel of channels) {
+      const ids = new Set<number>()
+      if (channel.serviceId !== undefined) ids.add(channel.serviceId)
+      for (const service of scanServices.get(channel.physicalChannel) ?? []) {
+        ids.add(service.serviceId)
+      }
+      if (liveChannel === channel.physicalChannel) {
+        for (const service of liveServices) ids.add(service.serviceId)
+      }
+      map.set(channel.physicalChannel, [...ids])
     }
     return map
-  }, [])
-
-  const resolveChannel = useCallback(
-    (serviceId: number): number | null => {
-      const direct = channelByServiceId.get(serviceId)
-      if (direct !== undefined) return direct
-      const service = services.find((candidate) => candidate.serviceId === serviceId)
-      if (!service) return null
-      return channelByName.get(service.name) ?? null
-    },
-    [channelByServiceId, channelByName, services],
-  )
-
-  const selectProgram = useCallback(
-    (event: Event) => {
-      const channel = resolveChannel(event.serviceId)
-      if (channel !== null) void receiverController.tunePhysicalChannel(channel)
-      receiverController.selectService(event.serviceId)
-    },
-    [resolveChannel],
-  )
+  }, [channels, scanServices, liveChannel, liveServices])
 
   const allEvents = useMemo(() => [...storedEvents, ...(eit?.events ?? [])], [storedEvents, eit])
 
   const guide = useMemo(
-    () => buildProgramGuide(allEvents, services, { hours, now }),
-    [allEvents, services, hours, now],
+    () => buildChannelGuide(channels, allEvents, serviceNames, serviceIdsByChannel, { hours, now }),
+    [channels, allEvents, serviceNames, serviceIdsByChannel, hours, now],
   )
+
+  const selectChannel = useCallback((entry: ChannelGuideEntry) => {
+    void receiverController.tunePhysicalChannel(entry.physicalChannel)
+  }, [])
 
   const refresh = useCallback(() => {
     setNow(new Date())
     void reload()
   }, [reload])
 
-  return { guide, services, loading, resolveChannel, selectProgram, refresh }
+  return { guide, loading, selectChannel, refresh }
 }

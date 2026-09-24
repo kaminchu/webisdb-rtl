@@ -31,14 +31,14 @@ describe('settings', () => {
   })
 
   it('merges nested ui and debug without dropping sibling fields', () => {
-    saveSettings({ debug: { spectrum: true, showPsi: false, showPidList: false } })
+    saveSettings({ debug: { overlayBuffer: true } })
     saveSettings({ ui: { theme: 'dark' } })
-    const settings = saveSettings({ debug: { showPsi: true } })
+    const settings = saveSettings({ debug: { overlayQuality: true } })
     expect(settings.debug).toEqual({
-      spectrum: true,
-      showPsi: true,
-      showPidList: false,
       showOverlay: false,
+      overlayBuffer: true,
+      overlayQuality: true,
+      overlaySpectrum: false,
     })
     expect(settings.ui).toEqual({ theme: 'dark', subtitles: false, audioChannel: 'stereo' })
   })

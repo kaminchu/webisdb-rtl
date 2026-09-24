@@ -1,16 +1,11 @@
-import { useEffect, useState } from 'react'
-import { Button } from '../../components/Button'
-import { Panel } from '../../components/Panel'
+import { useState } from 'react'
 import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
+import { Button } from '../../components/Button'
+import { Panel } from '../../components/Panel'
 import { loadSettings, saveSettings } from '../../storage/settings'
-import { IqFilePanel } from '../iqfile/IqFilePanel'
-import { BufferPanel } from '../receiver/BufferPanel'
-import { ConnectPanel } from '../receiver/ConnectPanel'
-import { MetricsPanel } from '../receiver/MetricsPanel'
-import { SpectrumView } from '../receiver/SpectrumView'
-import { TuningPanel } from '../receiver/TuningPanel'
-import { ScanScreen } from '../scan/ScanScreen'
+import { MenuButton } from '../shell/MenuButton'
+import { ChannelSettings } from './ChannelSettings'
 import styles from './SettingsScreen.module.css'
 
 const SAMPLE_RATES = [
@@ -20,21 +15,6 @@ const SAMPLE_RATES = [
   { value: 2_400_000, label: '2.4 MSps' },
 ] as const
 
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(2)} MB`
-  if (bytes >= 1000) return `${(bytes / 1000).toFixed(1)} kB`
-  return `${bytes} B`
-}
-
-function useDumpSizes() {
-  const [sizes, setSizes] = useState(() => receiverController.dumpSizes)
-  useEffect(() => {
-    const id = window.setInterval(() => setSizes(receiverController.dumpSizes), 1000)
-    return () => window.clearInterval(id)
-  }, [])
-  return sizes
-}
-
 export function SettingsScreen() {
   const gainDb = useStore((s) => s.receiver.gainDb)
   const sampleRate = useStore((s) => s.receiver.sampleRate)
@@ -42,12 +22,11 @@ export function SettingsScreen() {
   const [agc, setAgc] = useState(() => loadSettings().gainDb === null)
   const [gainInput, setGainInput] = useState(() => String(loadSettings().gainDb ?? 19.7))
   const [rate, setRate] = useState(() => loadSettings().sampleRate ?? sampleRate)
-  const [spectrum, setSpectrum] = useState(() => loadSettings().debug.spectrum)
   const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
   const [showOverlay, setShowOverlay] = useState(() => loadSettings().debug.showOverlay)
-  const [iqDump, setIqDump] = useState(false)
-  const [tsDump, setTsDump] = useState(false)
-  const sizes = useDumpSizes()
+  const [overlayBuffer, setOverlayBuffer] = useState(() => loadSettings().debug.overlayBuffer)
+  const [overlayQuality, setOverlayQuality] = useState(() => loadSettings().debug.overlayQuality)
+  const [overlaySpectrum, setOverlaySpectrum] = useState(() => loadSettings().debug.overlaySpectrum)
 
   const applyGain = () => {
     const value = Number.parseFloat(gainInput)
@@ -66,13 +45,6 @@ export function SettingsScreen() {
     saveSettings({ sampleRate: value })
   }
 
-  const toggleSpectrum = () => {
-    const next = !spectrum
-    setSpectrum(next)
-    receiverController.setSpectrumEnabled(next)
-    saveSettings({ debug: { spectrum: next } })
-  }
-
   const toggleSubtitles = () => {
     const next = !subtitles
     setSubtitles(next)
@@ -85,23 +57,36 @@ export function SettingsScreen() {
     saveSettings({ debug: { showOverlay: next } })
   }
 
-  const toggleIqDump = () => {
-    const next = !iqDump
-    setIqDump(next)
-    receiverController.setIqDumpEnabled(next)
+  const toggleOverlayBuffer = () => {
+    const next = !overlayBuffer
+    setOverlayBuffer(next)
+    saveSettings({ debug: { overlayBuffer: next } })
   }
 
-  const toggleTsDump = () => {
-    const next = !tsDump
-    setTsDump(next)
-    receiverController.setTsDumpEnabled(next)
+  const toggleOverlayQuality = () => {
+    const next = !overlayQuality
+    setOverlayQuality(next)
+    saveSettings({ debug: { overlayQuality: next } })
+  }
+
+  const toggleOverlaySpectrum = () => {
+    const next = !overlaySpectrum
+    setOverlaySpectrum(next)
+    saveSettings({ debug: { overlaySpectrum: next } })
+    receiverController.setSpectrumEnabled(next)
   }
 
   return (
     <div className={styles.page}>
+      <header className={styles.topbar}>
+        <MenuButton />
+        <h1 className={styles.heading}>設定</h1>
+      </header>
+
       <div className={styles.grid}>
-        <TuningPanel />
-        <ScanScreen />
+        <div className={styles.wide}>
+          <ChannelSettings />
+        </div>
 
         <Panel title="表示設定">
           <div className={styles.stack}>
@@ -113,14 +98,37 @@ export function SettingsScreen() {
               <input type="checkbox" checked={showOverlay} onChange={toggleOverlay} />
               デバッグ情報を視聴画面にオーバーレイする
             </label>
-            <label className={styles.toggle}>
-              <input type="checkbox" checked={spectrum} onChange={toggleSpectrum} />
-              スペクトラム表示
-            </label>
+            <div className={styles.nested}>
+              <label className={styles.toggle}>
+                <input
+                  type="checkbox"
+                  checked={overlayBuffer}
+                  disabled={!showOverlay}
+                  onChange={toggleOverlayBuffer}
+                />
+                バッファ
+              </label>
+              <label className={styles.toggle}>
+                <input
+                  type="checkbox"
+                  checked={overlayQuality}
+                  disabled={!showOverlay}
+                  onChange={toggleOverlayQuality}
+                />
+                受信品質
+              </label>
+              <label className={styles.toggle}>
+                <input
+                  type="checkbox"
+                  checked={overlaySpectrum}
+                  disabled={!showOverlay}
+                  onChange={toggleOverlaySpectrum}
+                />
+                スペクトラム
+              </label>
+            </div>
           </div>
         </Panel>
-
-        <ConnectPanel />
 
         <Panel title="受信設定">
           <div className={styles.stack}>
@@ -167,41 +175,6 @@ export function SettingsScreen() {
             </div>
           </div>
         </Panel>
-
-        <Panel title="スペクトラム">
-          <SpectrumView />
-        </Panel>
-
-        <MetricsPanel />
-        <BufferPanel />
-
-        <Panel title="ダンプ (要件定義書 33)">
-          <div className={styles.stack}>
-            <label className={styles.toggle}>
-              <input type="checkbox" checked={iqDump} onChange={toggleIqDump} />
-              IQ を記録
-            </label>
-            <div className={styles.row}>
-              <Button type="button" size="sm" onClick={() => receiverController.saveIqDump()}>
-                IQ を保存
-              </Button>
-              <span className={styles.hint}>{formatBytes(sizes.iqBytes)}</span>
-            </div>
-
-            <label className={styles.toggle}>
-              <input type="checkbox" checked={tsDump} onChange={toggleTsDump} />
-              TS を記録
-            </label>
-            <div className={styles.row}>
-              <Button type="button" size="sm" onClick={() => receiverController.saveTsDump()}>
-                TS を保存
-              </Button>
-              <span className={styles.hint}>{formatBytes(sizes.tsBytes)}</span>
-            </div>
-          </div>
-        </Panel>
-
-        <IqFilePanel />
       </div>
     </div>
   )
