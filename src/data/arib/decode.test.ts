@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeAribText } from './decode'
+import { decodeAribText, tokenizeAribText } from './decode'
 import { encodeAribText } from '../../ts/sectionBuilder'
 
 describe('decodeAribText', () => {
@@ -31,5 +31,40 @@ describe('decodeAribText', () => {
     expect(decodeAribText(Uint8Array.from([0x0e, 0x41, 0x0d, 0x42]))).toBe('A\nB')
     expect(decodeAribText(Uint8Array.from([0x3f]))).toBe('\ufffd')
     expect(decodeAribText(new Uint8Array(0))).toBe('')
+  })
+
+  it('decodes ARIB additional symbols', () => {
+    expect(decodeAribText(Uint8Array.from([0x75, 0x21]))).toBe('㐂')
+  })
+})
+
+describe('tokenizeAribText', () => {
+  it('emits graphic characters and control functions in order', () => {
+    const tokens = tokenizeAribText(Uint8Array.from([0x0c, 0x87, 0x24, 0x33]))
+    expect(tokens[0]).toMatchObject({ type: 'control', code: 0x0c })
+    expect(tokens[1]).toMatchObject({ type: 'control', code: 0x87 })
+    expect(tokens[2]).toMatchObject({ type: 'char', text: 'こ' })
+  })
+
+  it('parses CSI parameters and the final byte', () => {
+    const tokens = tokenizeAribText(
+      Uint8Array.from([0x9b, 0x31, 0x37, 0x30, 0x3b, 0x33, 0x30, 0x5f]),
+    )
+    expect(tokens[0]).toEqual({
+      type: 'control',
+      code: 0x9b,
+      params: [170, 30],
+      final: 0x5f,
+    })
+  })
+
+  it('accepts ESC [ as a CSI introducer', () => {
+    const tokens = tokenizeAribText(Uint8Array.from([0x1b, 0x5b, 0x34, 0x61]))
+    expect(tokens[0]).toEqual({ type: 'control', code: 0x9b, params: [4], final: 0x61 })
+  })
+
+  it('emits a DRCS reference for a designated DRCS set', () => {
+    const tokens = tokenizeAribText(Uint8Array.from([0x1b, 0x28, 0x20, 0x41, 0x21]))
+    expect(tokens).toEqual([{ type: 'drcs', map: 1, code: 0x21 }])
   })
 })

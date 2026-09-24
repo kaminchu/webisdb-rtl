@@ -158,7 +158,7 @@ export class OneSegPlayer {
         }
       }
     } else if (packet.kind === 'caption') {
-      if (this.subtitlesEnabled) this.captions.update(packet.data)
+      if (this.subtitlesEnabled) this.captions.update(packet.data, packet.pts)
     } else if (packet.kind === 'audio') {
       this.counters.audioSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
@@ -281,7 +281,9 @@ export class OneSegPlayer {
           this.canvas.height = height
         }
         context.drawImage(frame, 0, 0, width, height)
-        if (this.subtitlesEnabled) this.captions.draw(context, width, height)
+        if (this.subtitlesEnabled) {
+          this.captions.draw(context, width, height, microsToPts90k(frame.timestamp))
+        }
       }
       this.counters.videoFramesDecoded++
     } finally {
