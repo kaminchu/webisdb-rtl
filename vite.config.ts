@@ -1,12 +1,13 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 
 const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1]
 const base = process.env.VITE_BASE ?? (repoName ? `/${repoName}/` : '/webisdb-rtl/')
 
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? base : '/',
-  plugins: [react()],
+  plugins: [react(), basicSsl()],
   worker: {
     format: 'es',
   },
