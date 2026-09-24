@@ -189,6 +189,7 @@ export class TmccDecoder {
   private totalBits = 0
   private frameStartBit = -1
   private readonly accum = new Int16Array(TMCC_BITS_PER_FRAME)
+  private readonly frame = new Uint8Array(TMCC_BITS_PER_FRAME)
   private accumFrames = 0
   private locked = false
   private consistent = 0
@@ -237,7 +238,7 @@ export class TmccDecoder {
       this.prevRe[k] = re[k]
       this.prevIm[k] = im[k]
     }
-    return this.feedBit(vote >= 0 ? 1 : 0)
+    return this.feedBit(vote >= 0 ? 0 : 1)
   }
 
   private feedBit(bit: number): TmccInfo {
@@ -248,15 +249,24 @@ export class TmccDecoder {
       return this.lastInfo
     }
 
-    this.accum[this.phasePos] += bit ? 1 : -1
+    this.frame[this.phasePos] = bit
     this.phasePos++
     if (this.phasePos >= TMCC_BITS_PER_FRAME) {
       this.phasePos = 0
+      this.accumulateFrame(this.frame)
       this.accumFrames++
       if (this.accumFrames > 1000) for (let i = 0; i < this.accum.length; i++) this.accum[i] >>= 1
       return this.decodeAccumulated()
     }
     return this.lastInfo
+  }
+
+  private accumulateFrame(frame: ArrayLike<number>): void {
+    const distance = syncDistance(frame)
+    for (let i = 0; i < TMCC_BITS_PER_FRAME; i++) {
+      const bit = i < SYNC_BITS && distance.odd < distance.even ? frame[i] ^ 1 : frame[i]
+      this.accum[i] += bit ? 1 : -1
+    }
   }
 
   private acquirePhase(): void {
@@ -289,18 +299,14 @@ export class TmccDecoder {
     this.accum.fill(0)
     const run = len - best
     this.frameStartBit = this.totalBits - len + best
-    for (let i = 0; i < run; i++) {
-      const pos = i % TMCC_BITS_PER_FRAME
-      const frameStart = best + i - pos
-      let b = buf[best + i]
-      if (pos < SYNC_BITS) {
-        const d = syncDistance(buf, frameStart)
-        if (d.odd < d.even) b ^= 1
-      }
-      this.accum[pos] += b ? 1 : -1
-    }
     this.accumFrames = Math.floor(run / TMCC_BITS_PER_FRAME)
+    for (let i = 0; i < this.accumFrames; i++) {
+      this.accumulateFrame(
+        buf.slice(best + i * TMCC_BITS_PER_FRAME, best + (i + 1) * TMCC_BITS_PER_FRAME),
+      )
+    }
     this.phasePos = run % TMCC_BITS_PER_FRAME
+    this.frame.set(buf.slice(best + this.accumFrames * TMCC_BITS_PER_FRAME))
     this.phaseSearch = []
     this.consistent = 0
     this.lastKey = ''
@@ -318,9 +324,16 @@ export class TmccDecoder {
       this.consistent = 0
       this.lastKey = ''
       this.locked = false
+      this.lastInfo = { ...this.lastInfo, locked: false }
       return this.lastInfo
     }
     const info = decodeTmccBits(bits, this.mode, this.giRatio)
+    if (!info.locked) {
+      this.consistent = 0
+      this.locked = false
+      this.lastInfo = { ...info, locked: false, frameCount: this.accumFrames }
+      return this.lastInfo
+    }
     const key = consistencyKey(info)
     if (key === this.lastKey) this.consistent++
     else this.consistent = 1

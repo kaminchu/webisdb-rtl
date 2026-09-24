@@ -24,7 +24,7 @@ function lockedSnapshot(signalLevelDb = -30): ScanChannelSnapshot {
     cnDb: 20,
     merDb: 25,
     transportStreamId: 1,
-    services: [],
+    services: [{ serviceId: 1, name: 'ワンセグ' }],
   }
 }
 
@@ -141,12 +141,42 @@ describe('runChannelScan', () => {
 })
 
 describe('probeChannel', () => {
-  it('returns immediately once locked', async () => {
+  it('retains a TMCC lock at the deadline without claiming decoded services', async () => {
     const snapshot = await probeChannel(0, undefined, () =>
       makeState({ locked: true, signalLevelDb: -20 }),
     )
     expect(snapshot.locked).toBe(true)
     expect(snapshot.signalLevelDb).toBe(-20)
+    expect(snapshotToResult(19, snapshot).succeeded).toBe(false)
+  })
+
+  it('waits beyond TMCC lock for PMT and SDT even when signal power falls', async () => {
+    let reads = 0
+    const state = makeState({ locked: true, signalLevelDb: -40 })
+    state.diagnostics.pmt = {
+      programNumber: 32144,
+      version: 0,
+      pcrPid: 512,
+      programInfo: [],
+      streams: [],
+    }
+    state.diagnostics.sdt = {
+      transportStreamId: 32258,
+      originalNetworkId: 32258,
+      version: 0,
+      services: [
+        { serviceId: 32144, serviceType: 192, serviceName: 'BSNワンセグ', providerName: '' },
+      ],
+    }
+    const result = await probeChannel(
+      1000,
+      undefined,
+      () => (++reads === 1 ? makeState({ locked: true, signalLevelDb: -10 }) : state),
+      async () => undefined,
+    )
+    expect(reads).toBe(2)
+    expect(result.transportStreamId).toBe(32258)
+    expect(result.services[0].name).toBe('BSNワンセグ')
   })
 
   it('returns the best snapshot when lock never happens', async () => {
@@ -179,12 +209,13 @@ describe('scan result persistence', () => {
   it('maps between live and stored results', () => {
     const live = snapshotToResult(13, lockedSnapshot())
     const stored = toStoredScanResult(live)
-    expect(stored.serviceCount).toBe(0)
+    expect(stored.serviceCount).toBe(1)
     expect(stored.succeeded).toBe(true)
 
     const round = fromStoredScanResult(stored)
     expect(round.physicalChannel).toBe(13)
     expect(round.frequency).toBe(live.frequency)
     expect(round.scannedAt).toBeInstanceOf(Date)
+    expect(round).toEqual(live)
   })
 })

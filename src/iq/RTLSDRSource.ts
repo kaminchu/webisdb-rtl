@@ -17,6 +17,7 @@ import type { Tuner } from '../driver/rtlsdr/tuner/tuner'
 
 const DEFAULT_SAMPLE_RATE = 1_200_000
 const DEFAULT_TRANSFER_SIZE = 256 * 1024
+const TRANSFERS_IN_FLIGHT = 8
 
 export interface RTLSDRSourceOptions {
   sampleRate?: number
@@ -169,15 +170,26 @@ export class RTLSDRSource implements IQSource {
   }
 
   private async readLoop(): Promise<void> {
-    while (this.running) {
-      let data: Uint8Array
+    const read = async () => {
       try {
-        data = await this.transport.bulkIn(RTL_BULK_ENDPOINT, this.transferSize)
+        return { data: await this.transport.bulkIn(RTL_BULK_ENDPOINT, this.transferSize) }
       } catch (error) {
-        if (this.running) this.fail(error)
-        return
+        return { error }
       }
-      if (!this.running) return
+    }
+    // Keep the endpoint queued while JavaScript handles completed buffers; a single
+    // outstanding transfer lets the device FIFO overflow between submissions.
+    const pending = Array.from({ length: TRANSFERS_IN_FLIGHT }, read)
+    while (this.running) {
+      const result = await pending.shift()!
+      if (!this.running) break
+      if (!result.data) {
+        this.running = false
+        this.fail(result.error)
+        break
+      }
+      pending.push(read())
+      const data = result.data
       if (data.length === 0) continue
 
       const chunk: IqChunk = {
@@ -190,6 +202,7 @@ export class RTLSDRSource implements IQSource {
       }
       for (const cb of this.sampleCallbacks) cb(chunk)
     }
+    await Promise.all(pending)
   }
 
   private handleDisconnect(): void {

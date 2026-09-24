@@ -66,15 +66,20 @@ const ARIB_GR: Record<string, number[]> = {
 
 export function encodeAribText(text: string): Uint8Array {
   const bytes: number[] = []
+  let ascii = false
   for (const char of text) {
     const code = char.charCodeAt(0)
     if (code >= 0x20 && code <= 0x7e) {
+      if (!ascii) bytes.push(0x0e)
+      ascii = true
       bytes.push(code)
       continue
     }
     const pair = ARIB_GR[char]
     if (!pair) throw new Error(`encodeAribText: unsupported character ${char}`)
-    bytes.push(...pair)
+    if (ascii) bytes.push(0x0f)
+    ascii = false
+    bytes.push(...pair.map((byte) => byte & 0x7f))
   }
   return Uint8Array.from(bytes)
 }

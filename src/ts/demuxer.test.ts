@@ -12,6 +12,7 @@ import type {
 import { Demuxer, classifyStream } from './demuxer'
 import {
   asciiBytes,
+  encodeAribText,
   buildDataComponent,
   buildEit,
   buildNit,
@@ -86,7 +87,12 @@ describe('Demuxer', () => {
       transportStreamId: 0x1234,
       originalNetworkId: 0x7fff,
       services: [
-        { serviceId: 1, serviceType: 1, provider: asciiBytes('NHK'), name: asciiBytes('S1') },
+        {
+          serviceId: 1,
+          serviceType: 1,
+          provider: encodeAribText('NHK'),
+          name: encodeAribText('S1'),
+        },
       ],
     })
     const eit = buildEit({
@@ -100,13 +106,13 @@ describe('Demuxer', () => {
           startTime: new Date(Date.UTC(2024, 0, 1, 0, 0, 0)),
           duration: 60,
           runningStatus: 4,
-          title: asciiBytes('T'),
+          title: encodeAribText('T'),
         },
       ],
     })
     const nit = buildNit({
       networkId: 1,
-      networkName: asciiBytes('N'),
+      networkName: encodeAribText('N'),
       transportStreams: [{ transportStreamId: 0x1234, originalNetworkId: 0x7fff }],
     })
     const tdt = buildTdt(new Date(Date.UTC(2024, 0, 1, 0, 0, 0)))

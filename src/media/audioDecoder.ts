@@ -78,7 +78,9 @@ export class AudioStreamDecoder {
 
   /** True once the first decoded buffer has been anchored to the audio clock. */
   get anchored(): boolean {
-    return this.baseContextTime !== null && this.basePtsSec !== null
+    return (
+      this.context?.state === 'running' && this.baseContextTime !== null && this.basePtsSec !== null
+    )
   }
 
   /** Current media time in seconds derived from the AudioContext clock. */

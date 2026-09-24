@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { asciiBytes, buildEit, encodeAribText } from '../sectionBuilder'
+import { buildEit, encodeAribText } from '../sectionBuilder'
 import { decodeEit, isEitTableId } from './eit'
 
 describe('decodeEit', () => {
@@ -18,7 +18,7 @@ describe('decodeEit', () => {
           duration: 3661,
           runningStatus: 4,
           title: encodeAribText('こんにちは'),
-          text: asciiBytes('news'),
+          text: encodeAribText('news'),
           extendedText: encodeAribText('テスト'),
           genres: [0x70, 0x10],
         },

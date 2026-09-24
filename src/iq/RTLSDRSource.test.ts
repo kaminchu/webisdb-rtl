@@ -6,6 +6,27 @@ import { RTLSDRSource } from './RTLSDRSource'
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('RTLSDRSource', () => {
+  it('queues bulk reads ahead of consumption and replenishes before notifying listeners', async () => {
+    const transport = new MockUsbTransport()
+    transport.controlInHandler = (_request, _value, _index, length) =>
+      new Uint8Array(length).fill(0xa3)
+    const source = new RTLSDRSource(transport)
+    const readCount = () =>
+      transport.transfers.filter((transfer) => transfer.type === 'bulkIn').length
+    const observed: number[] = []
+    source.onSamples(() => observed.push(readCount()))
+    await source.open()
+    await source.start()
+    expect(readCount()).toBe(8)
+    transport.pushBulk(Uint8Array.of(1, 2))
+    await tick()
+    expect(observed).toEqual([9])
+    const stopped = source.stop()
+    transport.releasePendingBulk()
+    await stopped
+    await source.close()
+  })
+
   it('emits bulk buffers as U8 chunks and stops cleanly', async () => {
     const transport = new MockUsbTransport()
     transport.controlInHandler = (_request, _value, _index, length) =>

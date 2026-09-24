@@ -12,14 +12,10 @@ import { TmccDecoder, decodeTmccBits, dscSyndromeCount, matchSyncWord } from './
 const SYNC_EVEN = [0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0]
 
 function makeFrame(): Uint8Array {
-  const bits = new Uint8Array(204)
-  bits.set(SYNC_EVEN, 0)
-  bits[20] = 1
-  bits[26] = 1
-  bits[29] = 1
-  bits[35] = 1
-  bits[39] = 1
-  return bits
+  return Uint8Array.from(
+    '001101011110111000000111101001001011000101101001011001111111111111100100101100010110100101100111111111111111111111111111100101011111010000001100111001111101011100111001011011011101010001111100010100101100',
+    Number,
+  )
 }
 
 describe('matchSyncWord', () => {
@@ -49,9 +45,10 @@ describe('decodeTmccBits', () => {
     const info = decodeTmccBits(makeFrame(), 3, 8)
     expect(info.mode).toBe(3)
     expect(info.guardIntervalRatio).toBe(8)
-    expect(info.systemDescriptor).toBe(1)
+    expect(info.systemDescriptor).toBe(0)
     expect(info.partialReception).toBe(true)
-    expect(info.layers.A).toEqual({ modulation: 1, codeRate: 0, timeInterleave: 1, segments: 1 })
+    expect(info.layers.A).toEqual({ modulation: 1, codeRate: 1, timeInterleave: 3, segments: 1 })
+    expect(info.locked).toBe(true)
   })
 })
 
@@ -65,7 +62,7 @@ function encodeDbpsk(
   let phase = 0
   re[0] = 1
   for (let i = 0; i < producedBits; i++) {
-    if (frameBits[i % frameBits.length] === 0) phase += Math.PI
+    if (frameBits[i % frameBits.length] === 1) phase += Math.PI
     re[i + 1] = Math.cos(phase)
     im[i + 1] = Math.sin(phase)
   }
@@ -73,6 +70,30 @@ function encodeDbpsk(
 }
 
 describe('TmccDecoder', () => {
+  it('rejects repeated consistent fields with invalid DSC parity', () => {
+    const frame = makeFrame()
+    frame[125] ^= 1
+    const stream = encodeDbpsk(frame, 1020)
+    const decoder = new TmccDecoder(1, 8)
+    let info
+    for (let i = 0; i < stream.re.length; i++)
+      info = decoder.push(stream.re.subarray(i, i + 1), stream.im.subarray(i, i + 1))
+    expect(info?.locked).toBe(false)
+  })
+
+  it('keeps lock across alternating frame sync words', () => {
+    const even = makeFrame()
+    const odd = even.slice()
+    for (let i = 0; i < 16; i++) odd[i] ^= 1
+    const pair = Uint8Array.from([...even, ...odd])
+    const stream = encodeDbpsk(pair, 2040)
+    const decoder = new TmccDecoder(1, 8)
+    let info
+    for (let i = 0; i < stream.re.length; i++)
+      info = decoder.push(stream.re.subarray(i, i + 1), stream.im.subarray(i, i + 1))
+    expect(info?.locked).toBe(true)
+    expect(info?.frameCount).toBeGreaterThanOrEqual(9)
+  })
   it('locks after two consistent majority frames', () => {
     const frame = makeFrame()
     const stream = encodeDbpsk(frame, 612)

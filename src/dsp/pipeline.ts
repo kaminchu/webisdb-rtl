@@ -69,7 +69,7 @@ export interface OneSegPipelineOptions {
 const ACQUIRE_MIN_SAMPLES = 750_000
 const ACQUIRE_MAX_SYMBOLS = 900
 const TMCC_CFO_RANGE = 320
-const TS_BATCH_SYMBOLS = 1024
+const TS_BATCH_SYMBOLS = 32
 
 const CANDIDATES: readonly (readonly [TransmissionMode, number])[] = [
   [3, 8],
@@ -228,6 +228,7 @@ export class OneSegPipeline {
   private bufRe = new Float32Array(1 << 20)
   private bufIm = new Float32Array(1 << 20)
   private bufLen = 0
+  private bufferStart = 0
   private derotatedUpTo = 0
   private syncFed = 0
   private lastAcquireLen = 0
@@ -330,6 +331,7 @@ export class OneSegPipeline {
   /** Drop buffered samples and reset all DSP state. */
   discardBuffer(): void {
     this.bufLen = 0
+    this.bufferStart = 0
     this.derotatedUpTo = 0
     this.syncFed = 0
     this.lastAcquireLen = 0
@@ -394,6 +396,13 @@ export class OneSegPipeline {
         }
       }
     }
+    if (this.bufLen > ACQUIRE_MIN_SAMPLES) {
+      const drop = this.bufLen - ACQUIRE_MIN_SAMPLES
+      this.bufRe.copyWithin(0, drop, this.bufLen)
+      this.bufIm.copyWithin(0, drop, this.bufLen)
+      this.bufLen -= drop
+      this.lastAcquireLen = this.bufLen
+    }
     return false
   }
 
@@ -439,15 +448,28 @@ export class OneSegPipeline {
     for (let s = 1; s < planes.length; s++) {
       const tr = new Float32Array(tmcc.length)
       const ti = new Float32Array(tmcc.length)
+      const angle = (-2 * Math.PI * (m + MODE_PARAMS[mode].carriersPerSegment / 2) * s) / gi
+      const cos = Math.cos(angle)
+      const sin = Math.sin(angle)
       for (let c = 0; c < tmcc.length; c++) {
         const bin = half + m + tmcc[c]
         if (bin < 0 || bin >= planes[s].re.length) continue
-        tr[c] = planes[s].re[bin]
-        ti[c] = planes[s].im[bin]
+        tr[c] = planes[s].re[bin] * cos - planes[s].im[bin] * sin
+        ti[c] = planes[s].re[bin] * sin + planes[s].im[bin] * cos
       }
       info = dec.push(tr, ti)
     }
-    if (!info.locked) return null
+    const layer = info.layers.A
+    if (
+      !info.locked ||
+      !info.partialReception ||
+      !layer ||
+      layer.segments !== 1 ||
+      layer.modulation > 3 ||
+      layer.codeRate > 4 ||
+      layer.timeInterleave > 3
+    )
+      return null
     return { info, frameStart: Math.max(0, dec.frameStartSymbol - 1) }
   }
 
@@ -503,10 +525,18 @@ export class OneSegPipeline {
       this.lastGammaMag = res.gammaMagnitude
       this.lastPhi = res.phi
       for (const start of res.symbolStarts) this.processSymbol(start)
+      const drop = Math.max(0, this.bufLen - 2 * this.fftSize)
+      this.bufRe.copyWithin(0, drop, this.bufLen)
+      this.bufIm.copyWithin(0, drop, this.bufLen)
+      this.bufLen -= drop
+      this.bufferStart += drop
+      this.derotatedUpTo -= drop
+      this.syncFed -= drop
     }
   }
 
   private processSymbol(start: number): void {
+    start -= this.bufferStart
     const mode = this.mode
     const n = this.fftSize
     if (mode === null || start + n > this.bufLen) return
@@ -521,9 +551,18 @@ export class OneSegPipeline {
     const tmccC = oneSegTmccCarriers(mode)
     const tr = new Float32Array(tmccC.length)
     const ti = new Float32Array(tmccC.length)
+    // Integer CFO rotates successive symbols by 2π * offset * GI / FFT size.
+    const angle =
+      (-2 *
+        Math.PI *
+        (this.carrierBase + MODE_PARAMS[mode].carriersPerSegment / 2) *
+        this.symbolIndex) /
+      this.gi!
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
     for (let c = 0; c < tmccC.length; c++) {
-      tr[c] = carriers.re[tmccC[c]]
-      ti[c] = carriers.im[tmccC[c]]
+      tr[c] = carriers.re[tmccC[c]] * cos - carriers.im[tmccC[c]] * sin
+      ti[c] = carriers.re[tmccC[c]] * sin + carriers.im[tmccC[c]] * cos
     }
     const info = this.tmcc?.push(tr, ti) ?? null
     if (info !== null && info !== this.tmccInfo) {

@@ -19,6 +19,7 @@ import { ByteRecorder } from '../dump/recorder'
 import { downloadBytes, downloadText, timestampSlug } from '../dump/download'
 import { createEmptyDiagnostics, store } from './store'
 import { loadSettings, saveSettings } from '../storage/settings'
+import { receivedServices } from './serviceInfo'
 
 const DEFAULT_SAMPLE_RATE = 1_200_000
 const DEFAULT_GAIN = 19.7
@@ -55,15 +56,20 @@ export class ReceiverController {
       this.#receiverWorker = new Worker(new URL('../workers/receiver.worker.ts', import.meta.url), {
         type: 'module',
       })
-      this.#receiverWorker.onmessage = (event: MessageEvent<ReceiverEvent>) =>
-        this.#handleReceiverEvent(event.data)
+      const worker = this.#receiverWorker
+      this.#receiverWorker.onmessage = (event: MessageEvent<ReceiverEvent>) => {
+        if (this.#receiverWorker === worker) this.#handleReceiverEvent(event.data)
+      }
       this.#receiverWorker.onerror = (event) => this.#fail(event.message)
     }
     if (!this.#tsWorker) {
       this.#tsWorker = new Worker(new URL('../workers/ts.worker.ts', import.meta.url), {
         type: 'module',
       })
-      this.#tsWorker.onmessage = (event: MessageEvent<TsEvent>) => this.#handleTsEvent(event.data)
+      const worker = this.#tsWorker
+      this.#tsWorker.onmessage = (event: MessageEvent<TsEvent>) => {
+        if (this.#tsWorker === worker) this.#handleTsEvent(event.data)
+      }
       this.#tsWorker.onerror = (event) => this.#fail(event.message)
     }
     return { receiver: this.#receiverWorker, ts: this.#tsWorker }
@@ -193,6 +199,16 @@ export class ReceiverController {
     const source = this.#source
     this.#source = null
     if (source) await source.close().catch(() => undefined)
+    this.#resetWorkers()
+    this.#player?.reset()
+    store.setState({ diagnostics: createEmptyDiagnostics() })
+  }
+
+  #resetWorkers(): void {
+    this.#receiverWorker?.terminate()
+    this.#tsWorker?.terminate()
+    this.#receiverWorker = null
+    this.#tsWorker = null
   }
 
   // --- controls ------------------------------------------------------------
@@ -203,18 +219,41 @@ export class ReceiverController {
   }
 
   async tuneFrequency(hz: number): Promise<void> {
-    if (this.#source) await this.#source.setFrequency(hz)
+    const source = this.#source
+    const restart = source?.state === 'running'
+    if (source) {
+      await source.stop()
+      await source.setFrequency(hz)
+      this.#resetWorkers()
+    }
     store.setState((prev) => ({
       receiver: { ...prev.receiver, frequency: hz, channel: frequencyToChannel(hz) },
       diagnostics: createEmptyDiagnostics(),
     }))
     this.#postTs({ type: 'reset' })
-    this.#postReceiver({ type: 'tune', frequency: hz })
+    if (source) {
+      const receiver = store.getState().receiver
+      this.#postReceiver({
+        type: 'init',
+        options: {
+          source: { kind: 'rtlsdr', deviceLabel: source.descriptor.label },
+          frequency: hz,
+          sampleRate: source.descriptor.sampleRate,
+          gainDb: receiver.gainDb ?? 'auto',
+          ppm: receiver.ppm,
+          spectrumEnabled: true,
+        },
+      })
+      if (restart) await source.start()
+    } else {
+      this.#postReceiver({ type: 'tune', frequency: hz })
+    }
     this.#player?.reset()
   }
 
   start(): void {
     this.#postReceiver({ type: 'start' })
+    void this.#source?.start().catch((error: unknown) => this.#fail(String(error)))
     this.#started = true
   }
 
@@ -232,6 +271,7 @@ export class ReceiverController {
   }
 
   selectService(serviceId: number | null): void {
+    this.#player?.reset()
     if (serviceId !== null) this.#postTs({ type: 'selectService', serviceId })
     store.setState((prev) => ({
       diagnostics: { ...prev.diagnostics, selectedServiceId: serviceId },
@@ -338,23 +378,22 @@ export class ReceiverController {
         store.setState((prev) => ({ diagnostics: { ...prev.diagnostics, pat: event.section } }))
         break
       case 'pmt':
-        store.setState((prev) => ({ diagnostics: { ...prev.diagnostics, pmt: event.section } }))
+        store.setState((prev) => {
+          const diagnostics = { ...prev.diagnostics, pmt: event.section }
+          return {
+            diagnostics: {
+              ...diagnostics,
+              services: receivedServices(diagnostics),
+              selectedServiceId: diagnostics.selectedServiceId ?? event.section.programNumber,
+            },
+          }
+        })
         break
       case 'sdt': {
-        const services = event.section.services.map((s) => ({
-          serviceId: s.serviceId,
-          name: s.serviceName,
-          providerName: s.providerName,
-          serviceType: s.serviceType,
-        }))
-        store.setState((prev) => ({
-          diagnostics: {
-            ...prev.diagnostics,
-            sdt: event.section,
-            services,
-            selectedServiceId: prev.diagnostics.selectedServiceId ?? services[0]?.serviceId ?? null,
-          },
-        }))
+        store.setState((prev) => {
+          const diagnostics = { ...prev.diagnostics, sdt: event.section }
+          return { diagnostics: { ...diagnostics, services: receivedServices(diagnostics) } }
+        })
         break
       }
       case 'eit':

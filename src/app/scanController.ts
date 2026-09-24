@@ -14,6 +14,7 @@ import {
 import { receiverController } from './receiverController'
 import type { AppState } from './store'
 import { store } from './store'
+import { receivedServices, receivedTransportStreamId } from './serviceInfo'
 
 const PROBE_INTERVAL_MS = 150
 
@@ -48,7 +49,7 @@ export interface ScanChannelResult {
 export interface ScanRunOptions {
   from?: number
   to?: number
-  /** How long to wait for TMCC lock per channel. */
+  /** Maximum time to acquire transmission and service information per channel. */
   timeoutMs?: number
   /** Extra settle delay between channels. */
   settleMs?: number
@@ -100,7 +101,7 @@ export function snapshotToResult(
     physicalChannel: channel,
     frequency: channelToFrequencyHz(channel),
     scannedAt,
-    succeeded: snapshot.locked || snapshot.services.length > 0,
+    succeeded: snapshot.services.length > 0,
     signalLevelDb: snapshot.signalLevelDb,
     cnDb: snapshot.cnDb,
     merDb: snapshot.merDb,
@@ -116,19 +117,19 @@ export function readScanSnapshot(state: AppState): ScanChannelSnapshot {
     signalLevelDb: quality.signalLevelDb,
     cnDb: quality.cnDb,
     merDb: quality.merDb,
-    transportStreamId: state.diagnostics.pat?.transportStreamId ?? null,
-    services: state.diagnostics.services,
+    transportStreamId: receivedTransportStreamId(state.diagnostics),
+    services: receivedServices(state.diagnostics),
   }
 }
 
 function isBetterSnapshot(candidate: ScanChannelSnapshot, current: ScanChannelSnapshot): boolean {
-  const candidateLevel = candidate.signalLevelDb ?? -Infinity
-  const currentLevel = current.signalLevelDb ?? -Infinity
-  if (candidateLevel !== currentLevel) return candidateLevel > currentLevel
   if (candidate.services.length !== current.services.length) {
     return candidate.services.length > current.services.length
   }
-  return candidate.transportStreamId !== null && current.transportStreamId === null
+  if ((candidate.transportStreamId !== null) !== (current.transportStreamId !== null))
+    return candidate.transportStreamId !== null
+  if (candidate.locked !== current.locked) return candidate.locked
+  return (candidate.signalLevelDb ?? -Infinity) > (current.signalLevelDb ?? -Infinity)
 }
 
 function defaultDelay(ms: number): Promise<void> {
@@ -136,8 +137,7 @@ function defaultDelay(ms: number): Promise<void> {
 }
 
 /**
- * Poll the store until TMCC locks or the timeout elapses, keeping the strongest
- * snapshot seen so a channel that never locks still reports a signal level.
+ * TMCC precedes FEC warm-up and PSI/SI acquisition, so lock alone cannot end a scan.
  */
 export async function probeChannel(
   timeoutMs: number,
@@ -149,8 +149,14 @@ export async function probeChannel(
   let best = emptyScanSnapshot()
   for (;;) {
     if (isCancelled?.()) return best
-    const snapshot = readScanSnapshot(readState())
-    if (snapshot.locked) return snapshot
+    const state = readState()
+    const snapshot = readScanSnapshot(state)
+    if (
+      snapshot.services.length > 0 &&
+      snapshot.transportStreamId !== null &&
+      state.diagnostics.sdt
+    )
+      return snapshot
     if (isBetterSnapshot(snapshot, best)) best = snapshot
     if (Date.now() >= deadline) return best
     await delay(PROBE_INTERVAL_MS)
@@ -162,7 +168,7 @@ export async function runChannelScan(
   deps: ScanDependencies,
   options: ScanRunOptions = {},
 ): Promise<ScanChannelResult[]> {
-  const timeoutMs = options.timeoutMs ?? 4000
+  const timeoutMs = options.timeoutMs ?? 8000
   const settleMs = options.settleMs ?? 0
   const total = channels.length
   const results: ScanChannelResult[] = []
@@ -206,6 +212,10 @@ export function toStoredScanResult(result: ScanChannelResult): ScanResult {
     succeeded: result.succeeded,
     serviceCount: result.services.length,
     signalLevelDb: result.signalLevelDb,
+    transportStreamId: result.transportStreamId,
+    services: result.services,
+    cnDb: result.cnDb,
+    merDb: result.merDb,
   }
 }
 
@@ -216,10 +226,10 @@ export function fromStoredScanResult(record: ScanResult): ScanChannelResult {
     scannedAt: record.scannedAt instanceof Date ? record.scannedAt : new Date(record.scannedAt),
     succeeded: record.succeeded,
     signalLevelDb: record.signalLevelDb,
-    cnDb: null,
-    merDb: null,
-    transportStreamId: null,
-    services: [],
+    cnDb: record.cnDb ?? null,
+    merDb: record.merDb ?? null,
+    transportStreamId: record.transportStreamId ?? null,
+    services: record.services ?? [],
   }
 }
 

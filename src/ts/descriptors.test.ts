@@ -49,7 +49,7 @@ describe('decoders', () => {
 
   it('decodes the short event descriptor', () => {
     const name = encodeAribText('こんにちは')
-    const text = asciiBytes('hello')
+    const text = encodeAribText('hello')
     const info = decodeShortEvent(
       Uint8Array.from([...asciiBytes('jpn'), name.length, ...name, text.length, ...text]),
     )
@@ -59,8 +59,8 @@ describe('decoders', () => {
   })
 
   it('decodes the extended event descriptor', () => {
-    const description = asciiBytes('cast')
-    const itemText = asciiBytes('NHK')
+    const description = encodeAribText('cast')
+    const itemText = encodeAribText('NHK')
     const mainText = encodeAribText('テスト')
     const items = [description.length, ...description, itemText.length, ...itemText]
     const info = decodeExtendedEvent(

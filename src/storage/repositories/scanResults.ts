@@ -1,4 +1,5 @@
 import { ScanResultIndex, StoreName, toEpochMs, type KeyValueStore } from '../db'
+import type { Service } from '../../models'
 
 export interface ScanResult {
   id?: number
@@ -8,6 +9,10 @@ export interface ScanResult {
   succeeded: boolean
   serviceCount: number
   signalLevelDb: number | null
+  transportStreamId?: number | null
+  services?: Service[]
+  cnDb?: number | null
+  merDb?: number | null
 }
 
 export class ScanResultRepository {

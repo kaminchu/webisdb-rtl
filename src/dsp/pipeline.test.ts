@@ -11,16 +11,20 @@ import {
   scatteredPilotIndices,
 } from './isdbtParams'
 import { TsFftBackend } from './stages/fft'
+import { NcoCorrector } from './stages/frequencyCorrection'
 import { OneSegPipeline, type OneSegPipelineStats, type PipelineState } from './pipeline'
 
 function pushFile(
   path: string,
   sourceSampleRate = 1_200_000,
+  shiftHz = 0,
 ): {
   locked: TmccInfo | null
   stats: OneSegPipelineStats | null
   tsBytes: number
   tsPackets: number
+  serviceIds: number[]
+  transportStreamId: number | null
   pes: Record<StreamKind, number>
   states: PipelineState[]
 } {
@@ -28,6 +32,8 @@ function pushFile(
   const tmccs: TmccInfo[] = []
   const stats: OneSegPipelineStats[] = []
   const states: PipelineState[] = []
+  const serviceIds = new Set<number>()
+  let transportStreamId: number | null = null
   const pes: Record<StreamKind, number> = {
     video: 0,
     audio: 0,
@@ -36,6 +42,10 @@ function pushFile(
     other: 0,
   }
   const transport = new TransportStream({
+    onPmt: (pmt) => serviceIds.add(pmt.programNumber),
+    onSdt: (sdt) => {
+      transportStreamId = sdt.transportStreamId
+    },
     onPes: (packet) => {
       pes[packet.kind]++
     },
@@ -56,11 +66,25 @@ function pushFile(
     { sourceSampleRate },
   )
   const CHUNK = 16 * 1024
+  const nco = new NcoCorrector(shiftHz, sourceSampleRate)
   let seq = 0
   for (let off = 0; off < raw.length; off += CHUNK) {
+    let data: Uint8Array | Float32Array = raw.subarray(off, Math.min(off + CHUNK, raw.length))
+    if (shiftHz !== 0) {
+      const re = Float32Array.from(
+        { length: data.length / 2 },
+        (_, i) => (data[2 * i] - 127.5) / 127.5,
+      )
+      const im = Float32Array.from(
+        { length: data.length / 2 },
+        (_, i) => (data[2 * i + 1] - 127.5) / 127.5,
+      )
+      nco.process(re, im)
+      data = Float32Array.from({ length: data.length }, (_, i) => (i % 2 ? im[i >> 1] : re[i >> 1]))
+    }
     const chunk: IqChunk = {
-      data: raw.subarray(off, Math.min(off + CHUNK, raw.length)),
-      format: 'u8',
+      data,
+      format: shiftHz === 0 ? 'u8' : 'f32',
       sampleRate: sourceSampleRate,
       centerFrequency: 509_142_857,
       sequence: seq++,
@@ -74,6 +98,8 @@ function pushFile(
     stats: stats[stats.length - 1] ?? null,
     tsBytes,
     tsPackets,
+    serviceIds: [...serviceIds],
+    transportStreamId,
     pes,
     states,
   }
@@ -82,6 +108,17 @@ function pushFile(
 const IQ_FILES = ['/tmp/opencode/iq/all19.iq', '/tmp/opencode/iq/all23.iq']
 
 describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', () => {
+  it.each([-1, 1])(
+    'decodes after shifting integer CFO by %i carrier',
+    (carriers) => {
+      const path = IQ_FILES.find((file) => existsSync(file))!
+      const result = pushFile(path, 1_200_000, carriers * MODE_PARAMS[3].carrierSpacingHz)
+      expect(result.locked?.layers.A?.segments).toBe(1)
+      expect(result.tsPackets).toBeGreaterThan(0)
+      expect(result.serviceIds.length).toBeGreaterThan(0)
+    },
+    120_000,
+  )
   for (const path of IQ_FILES) {
     it.skipIf(!existsSync(path))(
       `locks TMCC and reports fields for ${path}`,
@@ -102,6 +139,9 @@ describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', 
         expect(r.states).toContain('locked')
         expect(r.tsPackets).toBeGreaterThan(0)
         expect(r.pes.video + r.pes.audio).toBeGreaterThan(0)
+        expect(r.serviceIds.length).toBeGreaterThan(0)
+        expect(r.transportStreamId).not.toBeNull()
+        expect(r.stats?.bufferedSamples).toBeLessThanOrEqual(2048)
       },
       120_000,
     )

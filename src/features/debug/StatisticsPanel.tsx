@@ -25,6 +25,7 @@ function StatGrid({ items }: { items: Array<[string, string]> }) {
 export function StatisticsPanel() {
   const statistics = useStore((state) => state.diagnostics.tsStatistics)
   const stats = useStore((state) => state.receiver.stats)
+  const diagnostics = useStore((state) => state.diagnostics)
 
   const tsItems: Array<[string, string]> = statistics
     ? [
@@ -70,6 +71,18 @@ export function StatisticsPanel() {
 
   return (
     <div className={styles.stack}>
+      <section>
+        <h3 className={styles.sectionTitle}>復号の到達状況</h3>
+        <StatGrid
+          items={[
+            ['TMCC', diagnostics.tmcc?.locked ? 'ロック' : '未ロック'],
+            ['TS', statistics?.packets ? '取得済み' : '未取得'],
+            ['PMT', diagnostics.pmt ? '取得済み' : '未取得'],
+            ['映像 PES', formatNumber(diagnostics.pesCounts.video)],
+            ['音声 PES', formatNumber(diagnostics.pesCounts.audio)],
+          ]}
+        />
+      </section>
       <section>
         <h3 className={styles.sectionTitle}>TS 統計</h3>
         <StatGrid items={tsItems} />

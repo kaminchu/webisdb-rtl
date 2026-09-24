@@ -4,9 +4,11 @@ import type { AudioDecoderConfigInput } from './audioDecoder'
 import { AvSync, SyncDecision, microsToPts90k, pts90kToMicros } from './avSync'
 import { VideoStreamDecoder, isKeyframe } from './videoDecoder'
 import type { VideoDecoderConfigInput } from './videoDecoder'
+import { AdtsAssembler, splitAvcAccessUnits } from './elementaryStream'
 
 export interface OneSegPlayerOptions {
   audioContext?: AudioContext
+  onError?: (error: Error) => void
   /** A/V sync render window in seconds. */
   toleranceSec?: number
 }
@@ -22,11 +24,6 @@ export interface PlayerStats {
 }
 
 const DEFAULT_VIDEO_CONFIG: VideoDecoderConfigInput = { codec: 'avc1.42E01E' }
-const DEFAULT_AUDIO_CONFIG: AudioDecoderConfigInput = {
-  codec: 'mp4a.40.2',
-  sampleRate: 48000,
-  numberOfChannels: 2,
-}
 const MAX_PENDING_FRAMES = 8
 const CAPTURE_FPS = 30
 
@@ -55,6 +52,8 @@ export class OneSegPlayer {
   private videoConfig: AvcConfig | VideoDecoderConfigInput | null = null
   private audioConfig: AudioDecoderConfigInput | null = null
   private lastPts: number | null = null
+  private readonly adts = new AdtsAssembler()
+  private pendingVideo: PesPacket | null = null
   private counters = {
     videoSamples: 0,
     audioSamples: 0,
@@ -72,9 +71,13 @@ export class OneSegPlayer {
     }
     this.context2d = this.canvas.getContext('2d')
 
-    this.videoDecoder = new VideoStreamDecoder({ onFrame: (frame) => this.onVideoFrame(frame) })
+    this.videoDecoder = new VideoStreamDecoder({
+      onFrame: (frame) => this.onVideoFrame(frame),
+      onError: options.onError,
+    })
     this.audioDecoder = new AudioStreamDecoder({
       ...(options.audioContext ? { audioContext: options.audioContext } : {}),
+      onError: options.onError,
       onBufferQueued: () => {
         this.counters.audioBuffersQueued++
       },
@@ -113,25 +116,51 @@ export class OneSegPlayer {
       this.counters.videoSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
       if (!this.videoConfig) this.configureVideo(DEFAULT_VIDEO_CONFIG)
-      this.videoDecoder.pushSample(
-        packet.data,
-        pts90kToMicros(packet.pts ?? 0),
-        isKeyframe(packet.data),
-      )
+      const previous = this.pendingVideo
+      this.pendingVideo = packet
+      if (previous) {
+        const units = splitAvcAccessUnits(previous.data)
+        const start = pts90kToMicros(previous.pts ?? 0)
+        const duration = pts90kToMicros((packet.pts ?? 0) - (previous.pts ?? 0))
+        const step = duration > 0 && duration < 2_000_000 ? duration / units.length : 1_000_000 / 15
+        for (let i = 0; i < units.length; i++) {
+          this.videoDecoder.pushSample(units[i], start + i * step, isKeyframe(units[i]))
+        }
+      }
     } else if (packet.kind === 'audio') {
       this.counters.audioSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
-      if (!this.audioConfig) this.configureAudio(DEFAULT_AUDIO_CONFIG)
-      this.audioDecoder.pushSample(packet.data, pts90kToMicros(packet.pts ?? 0))
+      for (const frame of this.adts.push(packet.data, pts90kToMicros(packet.pts ?? 0))) {
+        if (
+          !this.audioConfig ||
+          this.audioConfig.sampleRate !== frame.sampleRate ||
+          this.audioConfig.numberOfChannels !== frame.numberOfChannels ||
+          this.audioConfig.codec !== frame.codec
+        ) {
+          this.configureAudio({
+            codec: frame.codec,
+            sampleRate: frame.sampleRate,
+            numberOfChannels: frame.numberOfChannels,
+          })
+        }
+        this.audioDecoder.pushSample(frame.data, frame.timestamp)
+      }
     }
   }
 
   setMuted(muted: boolean): void {
     this.audioDecoder.setMuted(muted)
+    if (!muted) this.audioDecoder.resume()
+  }
+
+  resume(): void {
+    this.audioDecoder.resume()
   }
 
   /** Flush decoders and the sync clock; used for LIVE recovery. */
   reset(): void {
+    this.adts.reset()
+    this.pendingVideo = null
     this.avSync.reset()
     this.videoDecoder.reset()
     this.audioDecoder.reset()

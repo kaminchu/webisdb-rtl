@@ -220,6 +220,12 @@ export class StreamingViterbi {
   private readonly metrics = new Float64Array(NUM_STATES)
   private readonly decisions = new Uint8Array(TRACEBACK * NUM_STATES)
   private readonly next = new Float64Array(NUM_STATES)
+  private readonly signA = Int8Array.from({ length: NUM_STATES }, (_, state) =>
+    parity(state & G1) === 0 ? 1 : -1,
+  )
+  private readonly signB = Int8Array.from({ length: NUM_STATES }, (_, state) =>
+    parity(state & G2) === 0 ? 1 : -1,
+  )
   private position = 0
   private pair: number[] = []
   private stepCount = 0
@@ -264,15 +270,9 @@ export class StreamingViterbi {
     const slot = (this.stepCount % TRACEBACK) * NUM_STATES
     for (let state = 0; state < NUM_STATES; state++) {
       const pred = state >> 1
-      const input = state & 1
-      const regLo = (pred << 1) | input
-      const regHi = ((pred | 32) << 1) | input
-      const lo =
-        metrics[pred] + (parity(regLo & G1) === 0 ? a : -a) + (parity(regLo & G2) === 0 ? b : -b)
-      const hi =
-        metrics[pred | 32] +
-        (parity(regHi & G1) === 0 ? a : -a) +
-        (parity(regHi & G2) === 0 ? b : -b)
+      const branch = this.signA[state] * a + this.signB[state] * b
+      const lo = metrics[pred] + branch
+      const hi = metrics[pred | 32] - branch
       if (lo >= hi) {
         next[state] = lo
         this.decisions[slot + state] = pred

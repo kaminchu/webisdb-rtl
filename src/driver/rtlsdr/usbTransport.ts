@@ -196,7 +196,7 @@ export class MockUsbTransport implements UsbTransport {
     (_request, _value, _index, length) => new Uint8Array(length)
 
   private bulkQueue: Uint8Array[] = []
-  private pendingBulk: ((data: Uint8Array) => void) | null = null
+  private pendingBulk: Array<(data: Uint8Array) => void> = []
   private readonly disconnectHandlers = new Set<() => void>()
 
   async open(): Promise<void> {
@@ -247,14 +247,13 @@ export class MockUsbTransport implements UsbTransport {
     const queued = this.bulkQueue.shift()
     if (queued) return queued
     return new Promise<Uint8Array>((resolve) => {
-      this.pendingBulk = resolve
+      this.pendingBulk.push(resolve)
     })
   }
 
   pushBulk(data: Uint8Array): void {
-    if (this.pendingBulk) {
-      const resolve = this.pendingBulk
-      this.pendingBulk = null
+    const resolve = this.pendingBulk.shift()
+    if (resolve) {
       resolve(data)
       return
     }
@@ -262,10 +261,8 @@ export class MockUsbTransport implements UsbTransport {
   }
 
   releasePendingBulk(): void {
-    if (!this.pendingBulk) return
-    const resolve = this.pendingBulk
-    this.pendingBulk = null
-    resolve(new Uint8Array(0))
+    for (const resolve of this.pendingBulk) resolve(new Uint8Array(0))
+    this.pendingBulk = []
   }
 
   onDisconnect(cb: () => void): () => void {

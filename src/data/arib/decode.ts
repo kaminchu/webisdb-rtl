@@ -48,79 +48,62 @@ function decodeEuc(bytes: number[]): string {
   return result
 }
 
-function skipEscape(bytes: Uint8Array, index: number): number {
-  let i = index + 1
-  if (i >= bytes.length) return i
-  const next = bytes[i]
-  if (next === 0x24 || next === 0x28 || next === 0x29 || next === 0x2a) {
-    i++
-    if (i < bytes.length) i++
-    return i
-  }
-  if (next === 0x6e || next === 0x6f) return i + 1
-  return i + 1
-}
-
-/**
- * Decode ARIB STD-B24 8-bit character code to a JavaScript string.
- *
- * GL bytes (0x20-0x7E) are treated as ASCII; GR pairs (0xA1-0xFE, 0xA1-0xFE)
- * are JIS X 0208 and are passed straight to a EUC-JP decoder (ARIB GR values
- * equal the EUC-JP byte values). C0/C1 controls are stripped, CR/LF become
- * newlines, and unknown bytes decode to U+FFFD.
- */
+/** ARIB STD-B24: SI text starts with G0=Kanji, G1=alphanumeric, G2=hiragana, G3=katakana. */
 export function decodeAribText(bytes: Uint8Array): string {
-  const euc: number[] = []
+  const sets = [0x42, 0x4a, 0x30, 0x31]
+  let gl = 0
+  let gr = 2
+  let single: number | null = null
   let result = ''
-
-  const flush = (): void => {
-    if (euc.length > 0) {
-      result += decodeEuc(euc)
-      euc.length = 0
-    }
-  }
-
   let i = 0
   while (i < bytes.length) {
-    const byte = bytes[i]
-
+    const byte = bytes[i++]
     if (byte === 0x1b) {
-      i = skipEscape(bytes, i)
+      const next = bytes[i++]
+      if (next === 0x6e || next === 0x6f) gl = next - 0x6c
+      else if (next >= 0x7c && next <= 0x7e) gr = 0x7f - next
+      else {
+        let slot = next
+        if (next === 0x24) slot = bytes[i] >= 0x28 && bytes[i] <= 0x2b ? bytes[i++] : 0x28
+        if (slot >= 0x28 && slot <= 0x2b) {
+          if (bytes[i] === 0x20) {
+            i += 2
+            sets[slot - 0x28] = -1
+          } else sets[slot - 0x28] = bytes[i++]
+        }
+      }
+      continue
+    }
+    if (byte === 0x0e || byte === 0x0f) {
+      gl = byte === 0x0e ? 1 : 0
+      continue
+    }
+    if (byte === 0x19 || byte === 0x1d) {
+      single = byte === 0x19 ? 2 : 3
       continue
     }
     if (byte === 0x0d || byte === 0x0a) {
-      euc.push(0x0a)
-      i++
+      result += '\n'
       continue
     }
-    if (
-      byte < 0x20 ||
-      byte === 0x7f ||
-      byte === 0x80 ||
-      byte === 0xa0 ||
-      (byte >= 0x81 && byte <= 0x9f)
-    ) {
-      i++
+    if (byte === 0x20 || byte === 0xa0) {
+      result += ' '
       continue
     }
-    if (byte < 0x80) {
-      euc.push(byte)
-      i++
-      continue
-    }
-
-    const next = i + 1 < bytes.length ? bytes[i + 1] : -1
-    if (next >= 0xa1 && next <= 0xfe) {
-      euc.push(byte, next)
-      i += 2
-      continue
-    }
-
-    flush()
-    result += REPLACEMENT
-    i++
+    if (byte < 0x20 || (byte >= 0x7f && byte <= 0xa0) || byte === 0xff) continue
+    const set = sets[byte >= 0xa1 ? gr : (single ?? gl)]
+    single = null
+    const code = byte & 0x7f
+    if (set === 0x42 || set === 0x39 || set === 0x3a) {
+      const next = bytes[i] & 0x7f
+      if (next >= 0x21 && next <= 0x7e) {
+        result += decodeEuc([code | 0x80, next | 0x80])
+        i++
+      } else result += REPLACEMENT
+    } else if (set === 0x4a || set === 0x36) result += String.fromCharCode(code)
+    else if (set === 0x30 || set === 0x37) result += decodeEuc([0xa4, code | 0x80])
+    else if (set === 0x31 || set === 0x38) result += decodeEuc([0xa5, code | 0x80])
+    else result += REPLACEMENT
   }
-
-  flush()
   return result
 }

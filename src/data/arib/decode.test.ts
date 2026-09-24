@@ -1,41 +1,35 @@
 import { describe, expect, it } from 'vitest'
 import { decodeAribText } from './decode'
-
-const KONNICHIWA = Uint8Array.from([0xa4, 0xb3, 0xa4, 0xf3, 0xa4, 0xcb, 0xa4, 0xc1, 0xa4, 0xcf])
-const NHK_SOUGOU = Uint8Array.from([0xa3, 0xce, 0xa3, 0xc8, 0xa3, 0xcb, 0xc1, 0xed, 0xb9, 0xe7])
-const TEST = Uint8Array.from([0xa5, 0xc6, 0xa5, 0xb9, 0xa5, 0xc8])
+import { encodeAribText } from '../../ts/sectionBuilder'
 
 describe('decodeAribText', () => {
-  it('decodes ASCII (GL)', () => {
-    expect(decodeAribText(Uint8Array.from([0x4e, 0x48, 0x4b]))).toBe('NHK')
+  it('decodes SI kanji, alphanumeric locking shifts and mixed text', () => {
+    for (const text of ['NHK', 'こんにちは', 'ＮＨＫ総合', 'テスト', 'AこんにちはB']) {
+      expect(decodeAribText(encodeAribText(text))).toBe(text)
+    }
   })
 
-  it('decodes JIS X 0208 (GR) text', () => {
-    expect(decodeAribText(KONNICHIWA)).toBe('こんにちは')
-    expect(decodeAribText(NHK_SOUGOU)).toBe('ＮＨＫ総合')
-    expect(decodeAribText(TEST)).toBe('テスト')
+  it('decodes broadcast network and service names with the initial Kanji set', () => {
+    expect(decodeAribText(Uint8Array.from([0x3f, 0x37, 0x33, 0x63, 0x0e, 0x32]))).toBe('新潟2')
+    expect(
+      decodeAribText(Uint8Array.from([0x0e, 0x42, 0x53, 0x4e, 0x0f, 0x37, 0x48, 0x42, 0x53])),
+    ).toBe('BSN携帯')
   })
 
-  it('decodes mixed ASCII and kana', () => {
-    const bytes = Uint8Array.from([0x41, ...KONNICHIWA, 0x42])
-    expect(decodeAribText(bytes)).toBe('AこんにちはB')
+  it('invokes single-byte hiragana and katakana without consuming pairs', () => {
+    expect(decodeAribText(Uint8Array.from([0xb3, 0xf3, 0xcb, 0xc1, 0xcf]))).toBe('こんにちは')
+    expect(decodeAribText(Uint8Array.from([0x1d, 0x46, 0x1d, 0x39, 0x1d, 0x48]))).toBe('テスト')
   })
 
-  it('maps CR/LF to newlines and strips C0/C1 controls', () => {
-    expect(decodeAribText(Uint8Array.from([0x41, 0x0d, 0x42]))).toBe('A\nB')
-    expect(decodeAribText(Uint8Array.from([0x41, 0x01, 0x42]))).toBe('AB')
-    expect(decodeAribText(Uint8Array.from([0x41, 0x85, 0x42]))).toBe('AB')
+  it('honours two-byte GR designation and locking shift', () => {
+    expect(
+      decodeAribText(Uint8Array.from([0x1b, 0x24, 0x29, 0x42, 0x1b, 0x7e, 0xc1, 0xed, 0xb9, 0xe7])),
+    ).toBe('総合')
   })
 
-  it('skips escape designation sequences', () => {
-    expect(decodeAribText(Uint8Array.from([0x1b, 0x24, 0x42, ...KONNICHIWA]))).toBe('こんにちは')
-  })
-
-  it('emits a replacement character for unknown bytes', () => {
-    expect(decodeAribText(Uint8Array.from([0x41, 0xa4, 0x20]))).toBe('A\ufffd ')
-  })
-
-  it('returns an empty string for empty input', () => {
+  it('maps line breaks and handles truncated kanji', () => {
+    expect(decodeAribText(Uint8Array.from([0x0e, 0x41, 0x0d, 0x42]))).toBe('A\nB')
+    expect(decodeAribText(Uint8Array.from([0x3f]))).toBe('\ufffd')
     expect(decodeAribText(new Uint8Array(0))).toBe('')
   })
 })
