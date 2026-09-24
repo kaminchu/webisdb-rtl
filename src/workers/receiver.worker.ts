@@ -137,11 +137,11 @@ function ensurePipeline(options?: { sampleRate?: number }): OneSegPipeline {
         lastStats = stats
         const now = performance.now()
         if (now - lastStatsAt >= 500) {
+          emitStats(now)
           lastStatsAt = now
           inputRate.tick()
           tsRate.tick()
           dspMs.tick()
-          emitStats(now)
         }
       },
       onState: (state) =>
@@ -157,8 +157,15 @@ function ensurePipeline(options?: { sampleRate?: number }): OneSegPipeline {
 
 function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
   const { options } = command
+  void fileSource?.stop()
   pipeline?.reset()
+  pipeline = null
   fileSource = null
+  spectrumEnabled = options.spectrumEnabled ?? false
+  lastSpectrumAt = 0
+  inputRate.tick()
+  tsRate.tick()
+  dspMs.tick()
   lastStats = null
   inputSamples = 0
   uptimeStart = performance.now()
@@ -173,6 +180,10 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
     })
     fileSource.onStateChange((state) => post({ type: 'state', state }))
     fileSource.onSamples((chunk) => {
+      if (chunk.endOfStream) {
+        pipeline?.flush()
+        return
+      }
       inputSamples += Math.floor(chunk.data.length / 2)
       inputRate.add(Math.floor(chunk.data.length / 2))
       maybeEmitSpectrum(chunk, performance.now())

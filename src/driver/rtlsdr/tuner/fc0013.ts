@@ -206,7 +206,7 @@ export class Fc0013Tuner implements Tuner {
 
       if (manual) {
         const reg14 = (await this.readReg(rtl, 0x14)) & 0xe0
-        await this.writeReg(rtl, 0x14, reg14 | fc0013LnaGainCode(gainDb))
+        await this.writeReg(rtl, 0x14, reg14 | fc0013LnaGainCode(Math.round(gainDb * 10)))
       }
     })
   }

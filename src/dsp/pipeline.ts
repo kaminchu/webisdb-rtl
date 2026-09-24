@@ -309,6 +309,7 @@ export class OneSegPipeline {
       this.lastAcquireLen = this.bufLen
       this.tryAcquire()
     }
+    this.emitStats()
   }
 
   /** Force acquisition with whatever is buffered and flush pending TS. */

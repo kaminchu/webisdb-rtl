@@ -98,8 +98,6 @@ export class ReceiverController {
       throw error
     }
     this.#attachSource(source)
-    await source.start()
-    this.#started = true
     store.setState((prev) => ({
       receiver: {
         ...prev.receiver,
@@ -124,6 +122,8 @@ export class ReceiverController {
         spectrumEnabled: true,
       },
     })
+    await source.start()
+    this.#started = source.state === 'running'
   }
 
   async openIqFile(

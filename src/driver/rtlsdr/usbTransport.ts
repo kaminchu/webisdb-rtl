@@ -39,11 +39,11 @@ export interface WebUsbDevice {
   controlTransferIn(setup: UsbControlSetup, length: number): Promise<UsbInTransferResult>
   controlTransferOut(setup: UsbControlSetup, data?: Uint8Array): Promise<UsbOutTransferResult>
   transferIn(endpointNumber: number, length: number): Promise<UsbInTransferResult>
-  addEventListener(type: 'disconnect', listener: (event: { device: WebUsbDevice }) => void): void
-  removeEventListener(type: 'disconnect', listener: (event: { device: WebUsbDevice }) => void): void
 }
 
 export interface WebUsbApi {
+  addEventListener(type: 'disconnect', listener: (event: { device: WebUsbDevice }) => void): void
+  removeEventListener(type: 'disconnect', listener: (event: { device: WebUsbDevice }) => void): void
   getDevices(): Promise<WebUsbDevice[]>
   requestDevice(options: {
     filters: Array<{ vendorId?: number; productId?: number; classCode?: number }>
@@ -154,7 +154,8 @@ export class WebUsbTransport implements UsbTransport {
   }
 
   async bulkIn(endpoint: number, length: number): Promise<Uint8Array> {
-    return toBytes(await this.device.transferIn(endpoint, length))
+    // WebUSB takes the endpoint number; direction is supplied by transferIn.
+    return toBytes(await this.device.transferIn(endpoint & 0x0f, length))
   }
 
   async reset(): Promise<void> {
@@ -162,11 +163,12 @@ export class WebUsbTransport implements UsbTransport {
   }
 
   onDisconnect(cb: () => void): () => void {
+    const usb = getWebUsb()
     const listener = (event: { device: WebUsbDevice }): void => {
       if (event.device === this.device) cb()
     }
-    this.device.addEventListener('disconnect', listener)
-    return () => this.device.removeEventListener('disconnect', listener)
+    usb.addEventListener('disconnect', listener)
+    return () => usb.removeEventListener('disconnect', listener)
   }
 }
 

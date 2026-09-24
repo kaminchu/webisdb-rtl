@@ -156,6 +156,21 @@ function synthU8(symbols: number, n: number, cp: number): Uint8Array {
 }
 
 describe('OneSegPipeline synthetic', () => {
+  it('reports incoming samples without requiring a stop or flush', () => {
+    const stats: OneSegPipelineStats[] = []
+    const pipe = new OneSegPipeline({ onStats: (value) => stats.push(value) })
+    pipe.pushIq({
+      data: new Uint8Array(16384).fill(128),
+      format: 'u8',
+      sampleRate: 1_200_000,
+      centerFrequency: 509_142_857,
+      sequence: 0,
+      timestamp: 0,
+    })
+    expect(stats).toHaveLength(1)
+    expect(stats[0].state).toBe('acquiring')
+    expect(stats[0].bufferedSamples).toBeGreaterThan(0)
+  })
   it('consumes a synthetic OFDM stream without throwing', () => {
     const data = synthU8(3, 1024, 128)
     const states: PipelineState[] = []
