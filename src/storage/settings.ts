@@ -14,6 +14,8 @@ export interface AppSettings {
   lastFrequency: number | null
   gainDb: number | null
   sampleRate: number | null
+  /** Playback jitter buffer depth in seconds; media is presented this far behind live. */
+  bufferSeconds: number
   ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
   debug: {
     showOverlay: boolean
@@ -30,6 +32,8 @@ export type SettingsPatch = Partial<Omit<AppSettings, 'ui' | 'debug'>> & {
 }
 
 export const SETTINGS_STORAGE_KEY = 'webisdb-rtl:settings'
+export const DEFAULT_BUFFER_SECONDS = 3
+export const MAX_BUFFER_SECONDS = 10
 
 export function defaultSettings(): AppSettings {
   return {
@@ -38,6 +42,7 @@ export function defaultSettings(): AppSettings {
     lastFrequency: null,
     gainDb: null,
     sampleRate: null,
+    bufferSeconds: DEFAULT_BUFFER_SECONDS,
     ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
     debug: {
       showOverlay: false,
@@ -72,6 +77,11 @@ function asNumberOrNull(value: unknown, fallback: number | null): number | null 
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function asBufferSeconds(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback
+  return Math.min(value, MAX_BUFFER_SECONDS)
 }
 
 function asTheme(value: unknown): 'dark' | 'light' | undefined {
@@ -110,6 +120,7 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
     lastFrequency: asNumberOrNull(patch.lastFrequency, base.lastFrequency),
     gainDb: asNumberOrNull(patch.gainDb, base.gainDb),
     sampleRate: asNumberOrNull(patch.sampleRate, base.sampleRate),
+    bufferSeconds: asBufferSeconds(patch.bufferSeconds, base.bufferSeconds),
     ui: {
       ...base.ui,
       ...(theme === undefined ? {} : { theme }),

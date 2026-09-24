@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PesPacket } from '../models/media'
 import { OneSegPlayer } from './player'
 
@@ -48,6 +48,47 @@ describe('OneSegPlayer routing', () => {
     const player = createPlayer()
     player.pushPes(packet('video'))
     expect(player.stats.lastPts).toBeNull()
+    player.close()
+  })
+})
+
+describe('OneSegPlayer jitter buffer', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('holds packets for the configured buffer before routing them', () => {
+    vi.useFakeTimers()
+    let now = 0
+    const player = new OneSegPlayer(document.createElement('canvas'), {
+      bufferSec: 3,
+      clock: () => now,
+    })
+
+    player.pushPes(packet('video', 90_000))
+    expect(player.stats.videoSamples).toBe(0)
+    expect(player.stats.bufferedPes).toBe(1)
+
+    vi.advanceTimersByTime(2_999)
+    expect(player.stats.videoSamples).toBe(0)
+
+    now = 3
+    vi.advanceTimersByTime(1)
+    expect(player.stats.videoSamples).toBe(1)
+    expect(player.stats.bufferedPes).toBe(0)
+    player.close()
+  })
+
+  it('drops queued packets and timers on reset', () => {
+    vi.useFakeTimers()
+    const player = new OneSegPlayer(document.createElement('canvas'), {
+      bufferSec: 3,
+      clock: () => 0,
+    })
+    player.pushPes(packet('audio', 90_000))
+    expect(player.stats.bufferedPes).toBe(1)
+    player.reset()
+    expect(player.stats.bufferedPes).toBe(0)
     player.close()
   })
 })

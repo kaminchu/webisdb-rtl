@@ -12,6 +12,10 @@ export interface OneSegPlayerOptions {
   onError?: (error: Error) => void
   /** A/V sync render window in seconds. */
   toleranceSec?: number
+  /** Playback jitter buffer depth in seconds; packets are held this long before decoding. */
+  bufferSec?: number
+  /** Wall clock in seconds; overridable for tests. */
+  clock?: () => number
 }
 
 export interface PlayerStats {
@@ -22,11 +26,18 @@ export interface PlayerStats {
   dropped: number
   /** Raw PES PTS of the most recent packet, in 90 kHz units. */
   lastPts: number | null
+  /** PES packets still waiting in the jitter buffer. */
+  bufferedPes: number
 }
 
 const DEFAULT_VIDEO_CONFIG: VideoDecoderConfigInput = { codec: 'avc1.42E01E' }
 const MAX_PENDING_FRAMES = 8
 const CAPTURE_FPS = 30
+
+interface BufferedPes {
+  packet: PesPacket
+  receivedAt: number
+}
 
 function isCanvasElement(
   element: HTMLVideoElement | HTMLCanvasElement,
@@ -50,6 +61,10 @@ export class OneSegPlayer {
   private readonly captions = new CaptionRenderer()
   private subtitlesEnabled = false
   private readonly avSync: AvSync
+  private readonly bufferSec: number
+  private readonly now: () => number
+  private readonly pesQueue: BufferedPes[] = []
+  private queueTimer: ReturnType<typeof setTimeout> | null = null
   private readonly pending: VideoFrame[] = []
   private drainScheduled = false
   private videoConfig: AvcConfig | VideoDecoderConfigInput | null = null
@@ -73,6 +88,8 @@ export class OneSegPlayer {
       attachCaptureStream(video, this.canvas)
     }
     this.context2d = this.canvas.getContext('2d')
+    this.bufferSec = Math.max(0, options.bufferSec ?? 0)
+    this.now = options.clock ?? (() => performance.now() / 1000)
 
     this.videoDecoder = new VideoStreamDecoder({
       onFrame: (frame) => this.onVideoFrame(frame),
@@ -99,6 +116,7 @@ export class OneSegPlayer {
       audioBuffersQueued: this.counters.audioBuffersQueued,
       dropped: this.counters.dropped,
       lastPts: this.lastPts,
+      bufferedPes: this.pesQueue.length,
     }
   }
 
@@ -115,6 +133,15 @@ export class OneSegPlayer {
   }
 
   pushPes(packet: PesPacket): void {
+    if (this.bufferSec <= 0) {
+      this.routePes(packet)
+      return
+    }
+    this.pesQueue.push({ packet, receivedAt: this.now() })
+    this.scheduleQueueDrain()
+  }
+
+  private routePes(packet: PesPacket): void {
     if (packet.kind === 'video') {
       this.counters.videoSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
@@ -153,6 +180,34 @@ export class OneSegPlayer {
     }
   }
 
+  private scheduleQueueDrain(): void {
+    if (this.queueTimer !== null) return
+    const oldest = this.pesQueue[0]
+    if (!oldest) return
+    const waitMs = Math.max(0, (oldest.receivedAt + this.bufferSec - this.now()) * 1000)
+    this.queueTimer = setTimeout(() => {
+      this.queueTimer = null
+      this.drainQueue()
+    }, waitMs)
+  }
+
+  private drainQueue(): void {
+    const cutoff = this.now() - this.bufferSec
+    while (this.pesQueue.length > 0 && this.pesQueue[0].receivedAt <= cutoff) {
+      const entry = this.pesQueue.shift()
+      if (entry) this.routePes(entry.packet)
+    }
+    if (this.pesQueue.length > 0) this.scheduleQueueDrain()
+  }
+
+  private clearQueue(): void {
+    if (this.queueTimer !== null) {
+      clearTimeout(this.queueTimer)
+      this.queueTimer = null
+    }
+    this.pesQueue.length = 0
+  }
+
   setMuted(muted: boolean): void {
     this.audioDecoder.setMuted(muted)
     if (!muted) this.audioDecoder.resume()
@@ -173,6 +228,7 @@ export class OneSegPlayer {
 
   /** Flush decoders and the sync clock; used for LIVE recovery. */
   reset(): void {
+    this.clearQueue()
     this.adts.reset()
     this.pendingVideo = null
     this.avSync.reset()
@@ -183,6 +239,7 @@ export class OneSegPlayer {
   }
 
   close(): void {
+    this.clearQueue()
     this.clearPending()
     this.videoDecoder.close()
     this.audioDecoder.close()

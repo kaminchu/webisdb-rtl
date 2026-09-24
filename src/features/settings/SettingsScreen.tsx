@@ -3,7 +3,7 @@ import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import { Button } from '../../components/Button'
 import { Panel } from '../../components/Panel'
-import { loadSettings, saveSettings } from '../../storage/settings'
+import { loadSettings, MAX_BUFFER_SECONDS, saveSettings } from '../../storage/settings'
 import { MenuButton } from '../shell/MenuButton'
 import { ChannelSettings } from './ChannelSettings'
 import styles from './SettingsScreen.module.css'
@@ -22,6 +22,7 @@ export function SettingsScreen() {
   const [agc, setAgc] = useState(() => loadSettings().gainDb === null)
   const [gainInput, setGainInput] = useState(() => String(loadSettings().gainDb ?? 19.7))
   const [rate, setRate] = useState(() => loadSettings().sampleRate ?? sampleRate)
+  const [bufferInput, setBufferInput] = useState(() => String(loadSettings().bufferSeconds))
   const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
   const [showOverlay, setShowOverlay] = useState(() => loadSettings().debug.showOverlay)
   const [overlayBuffer, setOverlayBuffer] = useState(() => loadSettings().debug.overlayBuffer)
@@ -43,6 +44,13 @@ export function SettingsScreen() {
   const changeRate = (value: number) => {
     setRate(value)
     saveSettings({ sampleRate: value })
+  }
+
+  const changeBuffer = (raw: string) => {
+    setBufferInput(raw)
+    const value = Number.parseFloat(raw)
+    if (!Number.isFinite(value) || value < 0) return
+    saveSettings({ bufferSeconds: Math.min(value, MAX_BUFFER_SECONDS) })
   }
 
   const toggleSubtitles = () => {
@@ -126,6 +134,27 @@ export function SettingsScreen() {
                 />
                 スペクトラム
               </label>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="再生設定">
+          <div className={styles.stack}>
+            <div className={styles.field}>
+              <label htmlFor="buffer-seconds">再生バッファ (秒)</label>
+              <input
+                id="buffer-seconds"
+                className={styles.input}
+                type="number"
+                min={0}
+                max={MAX_BUFFER_SECONDS}
+                step={0.5}
+                value={bufferInput}
+                onChange={(event) => changeBuffer(event.target.value)}
+              />
+              <span className={styles.hint}>
+                受信からこの秒数だけ遅らせて再生し、途切れを抑えます（視聴画面を開き直すと適用）。
+              </span>
             </div>
           </div>
         </Panel>

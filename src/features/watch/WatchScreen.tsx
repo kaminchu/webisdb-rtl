@@ -31,10 +31,13 @@ export function WatchScreen() {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const player = new OneSegPlayer(canvas, { onError: (error) => setPlayerError(error.message) })
+    const settings = loadSettings()
+    const player = new OneSegPlayer(canvas, {
+      onError: (error) => setPlayerError(error.message),
+      bufferSec: settings.bufferSeconds,
+    })
     playerRef.current = player
     receiverController.setPlayer(player)
-    const settings = loadSettings()
     player.setAudioChannel(settings.ui.audioChannel)
     player.setSubtitlesEnabled(settings.ui.subtitles)
     return () => {

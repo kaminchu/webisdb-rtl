@@ -67,6 +67,17 @@ export function ChannelSettings() {
     }
   }
 
+  const selectAll = (list: ConfiguredChannel[]) => {
+    if (list.length === 0) return
+    applyChannels(mergeChannels(channels, list))
+  }
+
+  const clearAll = (list: ConfiguredChannel[]) => {
+    if (list.length === 0) return
+    const ids = new Set(list.map((channel) => channel.physicalChannel))
+    applyChannels(channels.filter((entry) => !ids.has(entry.physicalChannel)))
+  }
+
   const changeRegion = (id: string) => {
     setRegionId(id)
     setTransmitterId('')
@@ -114,6 +125,8 @@ export function ChannelSettings() {
     }
     return channel
   }
+
+  const scanChannels = scan.results.map((result) => scanChannelConfig(result.physicalChannel))
 
   return (
     <Panel title="チャンネル設定">
@@ -177,6 +190,25 @@ export function ChannelSettings() {
             </Button>
             {gpsStatus && <p className={styles.hint}>{gpsStatus}</p>}
 
+            <div className={styles.row}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={offered.length === 0}
+                onClick={() => selectAll(offered)}
+              >
+                すべて選択
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={offered.length === 0}
+                onClick={() => clearAll(offered)}
+              >
+                すべて解除
+              </Button>
+            </div>
+
             <div className={styles.checkList}>
               {offered.length === 0 ? (
                 <p className={styles.hint}>この送信所のチャンネル情報がありません。</p>
@@ -214,6 +246,24 @@ export function ChannelSettings() {
               )}
             </div>
             {scan.error && <p className={styles.error}>{scan.error}</p>}
+            <div className={styles.row}>
+              <Button
+                type="button"
+                size="sm"
+                disabled={scanChannels.length === 0}
+                onClick={() => selectAll(scanChannels)}
+              >
+                すべて選択
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={scanChannels.length === 0}
+                onClick={() => clearAll(scanChannels)}
+              >
+                すべて解除
+              </Button>
+            </div>
             <div className={styles.checkList}>
               {scan.results.length === 0 ? (
                 <p className={styles.hint}>スキャン結果がありません。</p>

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  DEFAULT_BUFFER_SECONDS,
+  MAX_BUFFER_SECONDS,
   defaultSettings,
   loadSettings,
   resetSettings,
@@ -49,6 +51,23 @@ describe('settings', () => {
     expect(settings.ui.subtitles).toBe(true)
     expect(settings.ui.audioChannel).toBe('sub')
     expect(settings.debug.showOverlay).toBe(true)
+  })
+
+  it('defaults the playback buffer to three seconds', () => {
+    expect(defaultSettings().bufferSeconds).toBe(DEFAULT_BUFFER_SECONDS)
+    expect(DEFAULT_BUFFER_SECONDS).toBe(3)
+  })
+
+  it('clamps the playback buffer and rejects invalid values', () => {
+    saveSettings({ bufferSeconds: 5 })
+    expect(loadSettings().bufferSeconds).toBe(5)
+    saveSettings({ bufferSeconds: 99 })
+    expect(loadSettings().bufferSeconds).toBe(MAX_BUFFER_SECONDS)
+
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ bufferSeconds: -1 }))
+    expect(loadSettings().bufferSeconds).toBe(DEFAULT_BUFFER_SECONDS)
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ bufferSeconds: 'x' }))
+    expect(loadSettings().bufferSeconds).toBe(DEFAULT_BUFFER_SECONDS)
   })
 
   it('rejects an invalid audio channel', () => {
