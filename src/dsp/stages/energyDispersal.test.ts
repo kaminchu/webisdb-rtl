@@ -43,11 +43,10 @@ describe('energy dispersal', () => {
     expect(Array.from(recovered)).toEqual(Array.from(codeword))
   })
 
-  it('produces the expected PRBS sequence', () => {
+  it('produces the ARIB STD-B31 PRBS sequence', () => {
     const prbs = new TestPrbs()
-    const first = prbs.clock(8)
-    expect(first).toBe(0b10111111)
     expect(prbs.clock(8)).toBe(0b00000011)
+    expect(prbs.clock(8)).toBe(0b11110110)
   })
 
   it('resets to the initial state', () => {

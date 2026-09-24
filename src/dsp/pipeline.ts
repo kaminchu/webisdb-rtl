@@ -237,6 +237,7 @@ export class OneSegPipeline {
   private fftSize = 0
   private carrierBase = 0
   private spOffset = 0
+  private frameStartSymbol = 0
   private integerCarrierOffset = 0
   private fractionalOffsetHz: number | null = null
 
@@ -344,6 +345,7 @@ export class OneSegPipeline {
     this.gi = null
     this.integerCarrierOffset = 0
     this.fractionalOffsetHz = null
+    this.frameStartSymbol = 0
     this.symbolIndex = 0
     this.setState('idle')
   }
@@ -382,10 +384,10 @@ export class OneSegPipeline {
       const candidates = estimateIntegerCfo(planes, mode)
       for (const { m, score } of candidates) {
         if (score < 0.5) continue
-        const info = this.runTmcc(mode, gi, planes, m)
-        if (info !== null) {
+        const result = this.runTmcc(mode, gi, planes, m)
+        if (result !== null) {
           const spOffset = estimateSpPhase(planes, mode, m)
-          this.applyLock(mode, gi, m, fFrac, n, spOffset, info)
+          this.applyLock(mode, gi, m, fFrac, n, spOffset, result.info, result.frameStart)
           this.processLocked()
           return true
         }
@@ -428,7 +430,7 @@ export class OneSegPipeline {
     gi: number,
     planes: readonly ComplexBins[],
     m: number,
-  ): TmccInfo | null {
+  ): { info: TmccInfo; frameStart: number } | null {
     const half = MODE_PARAMS[mode].oneSegFftSize >> 1
     const tmcc = oneSegTmccCarriers(mode)
     const dec = new TmccDecoder(mode, gi)
@@ -444,7 +446,8 @@ export class OneSegPipeline {
       }
       info = dec.push(tr, ti)
     }
-    return info.locked ? info : null
+    if (!info.locked) return null
+    return { info, frameStart: Math.max(0, dec.frameStartSymbol - 1) }
   }
 
   private applyLock(
@@ -455,6 +458,7 @@ export class OneSegPipeline {
     n: number,
     spOffset: number,
     info: TmccInfo,
+    frameStart: number,
   ): void {
     this.mode = mode
     this.gi = gi
@@ -462,9 +466,10 @@ export class OneSegPipeline {
     this.integerCarrierOffset = m
     this.carrierBase = m
     this.spOffset = spOffset
+    this.frameStartSymbol = frameStart
     this.fractionalOffsetHz = fFrac
     this.nco = new NcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
-    this.sync = new OfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ)
+    this.sync = new OfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ, true)
     this.channel = new ChannelEstimator(mode, 1)
     this.tmcc = new TmccDecoder(mode, gi)
     this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
@@ -473,6 +478,7 @@ export class OneSegPipeline {
     this.symbolIndex = 0
     this.derotatedUpTo = 0
     this.syncFed = 0
+    this.callbacks.onTmcc?.(info)
     this.setState('locked')
   }
 
@@ -524,7 +530,7 @@ export class OneSegPipeline {
       this.callbacks.onTmcc?.(info)
     }
 
-    if (this.oneSeg !== null) {
+    if (this.oneSeg !== null && this.symbolIndex >= this.frameStartSymbol) {
       const spPhase = (this.symbolIndex + this.spOffset) % 4
       const h = this.channel!.estimate(carriers, spPhase)
       const z = equalize(carriers, h)

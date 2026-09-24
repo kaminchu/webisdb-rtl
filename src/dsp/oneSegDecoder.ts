@@ -1,73 +1,66 @@
 /**
- * High-level one-seg receive chain: equalized carriers -> MPEG-TS bytes.
+ * High-level one-seg receive chain: equalized data carriers -> MPEG-TS bytes.
  *
- * Stages, in physical order:
+ * This mirrors the reference receiver's FEC chain exactly, per OFDM symbol:
  *   frequency deinterleave -> time deinterleave -> carrier demap ->
- *   bit deinterleave -> depuncture + Viterbi -> byte deinterleave ->
+ *   bit deinterleave -> streaming depuncture/Viterbi -> byte deinterleave ->
  *   energy descramble -> Reed-Solomon -> TS packet assembly.
  *
  * Time deinterleaving precedes demapping because DQPSK differential detection
  * needs the previous symbol of the same carrier after time deinterleaving.
- * Each stage is exposed separately in `stages/` and can be tested in isolation.
+ * The energy dispersal PRBS is re-initialised every OFDM frame, so the caller
+ * must start feeding symbols at a TMCC frame boundary.
  */
 
+import { bitsPerCarrier, demodulatePlaneSoft, type ComplexPlane } from './stages/carrierDemod'
 import {
-  codeRateName,
-  timeInterleaveLength,
-  MODE_PARAMS,
-  CarrierModulation,
-  type TransmissionMode,
-} from './isdbtParams'
-import type { TmccInfo } from '../models/tmcc'
-import type { RsBackend, ViterbiBackend, ViterbiRate } from './backend'
-import {
-  bitsPerCarrier,
-  demodulatePlane,
-  demodulatePlaneSoft,
-  packBits,
-  serializeCarrierBytes,
-  type ComplexPlane,
-} from './stages/carrierDemod'
-import {
-  BIT_INTERLEAVER_MAX_DELAY,
-  BitDeinterleaver,
   ByteDeinterleaver,
   SoftBitDeinterleaver,
   TimeDeinterleaver,
   frequencyDeinterleave,
 } from './stages/deinterleave'
-import { EnergyDescrambler, RS_CODEWORD_SIZE } from './stages/energyDispersal'
+import { EnergyDescrambler, RS_CODEWORD_SIZE, SYNC_BYTE } from './stages/energyDispersal'
 import { TsRsBackend } from './stages/reedSolomon'
 import { TsGenerator } from './stages/tsGenerator'
-import { TsViterbiBackend } from './stages/viterbi'
+import { StreamingViterbi } from './stages/viterbi'
+import {
+  CarrierModulation,
+  MODE_PARAMS,
+  codeRateName,
+  timeInterleaveLength,
+  type TransmissionMode,
+} from './isdbtParams'
+import type { TmccInfo } from '../models/tmcc'
+import type { RsBackend } from './backend'
 
 export interface OneSegDecoderOptions {
-  /** Enable the 12-branch byte deinterleaver (default false). */
-  byteDeinterleave?: boolean
-  /** Use soft-decision Viterbi when the backend supports it (default true). */
-  softDecision?: boolean
-  viterbi?: ViterbiBackend
   rs?: RsBackend
+}
+
+const CODE_RATE_FRACTIONS: Record<string, readonly [number, number]> = {
+  '1/2': [1, 2],
+  '2/3': [2, 3],
+  '3/4': [3, 4],
+  '5/6': [5, 6],
+  '7/8': [7, 8],
 }
 
 export class OneSegDecoder {
   readonly mode: TransmissionMode
   readonly modulation: CarrierModulation
-  readonly codeRate: ViterbiRate
 
   private readonly timeDeinterleaver: TimeDeinterleaver
-  private readonly bitDeinterleaver: BitDeinterleaver
-  private readonly softBitDeinterleaver: SoftBitDeinterleaver
-  private readonly byteDeinterleaver: ByteDeinterleaver | null
+  private readonly bitDeinterleaver: SoftBitDeinterleaver
+  private readonly byteDeinterleaver = new ByteDeinterleaver()
   private readonly descrambler = new EnergyDescrambler()
   private readonly ts = new TsGenerator()
-  private readonly viterbi: ViterbiBackend
+  private readonly viterbi: StreamingViterbi
   private readonly rs: RsBackend
   private readonly carriersPerSymbol: number
-  private readonly labelBits: number
-  private readonly softDecision: boolean
-  private pending: number[] = []
-  private carrierByteCount = 0
+  private readonly frameBytes: number
+  private readonly packet = new Uint8Array(RS_CODEWORD_SIZE)
+  private byteIndex = 0
+  private previous: ComplexPlane | null = null
 
   constructor(tmcc: TmccInfo, options: OneSegDecoderOptions = {}) {
     const layer = tmcc.layers.A
@@ -77,22 +70,17 @@ export class OneSegDecoder {
     if (layer === null) throw new Error('one-seg decoder requires TMCC layer A')
     this.mode = tmcc.mode as TransmissionMode
     this.modulation = layer.modulation as CarrierModulation
-    this.codeRate = codeRateName(layer.codeRate)
+    const codeRate = codeRateName(layer.codeRate)
     this.carriersPerSymbol = MODE_PARAMS[this.mode].dataCarriersPerSegment
-    this.labelBits = bitsPerCarrier(this.modulation)
     this.timeDeinterleaver = new TimeDeinterleaver(
       this.mode,
       timeInterleaveLength(layer.timeInterleave, this.mode),
     )
-    this.bitDeinterleaver = new BitDeinterleaver(this.modulation)
-    this.softBitDeinterleaver = new SoftBitDeinterleaver(this.modulation)
-    this.byteDeinterleaver = options.byteDeinterleave === true ? new ByteDeinterleaver() : null
-    this.viterbi = options.viterbi ?? new TsViterbiBackend()
+    this.bitDeinterleaver = new SoftBitDeinterleaver(this.modulation)
     this.rs = options.rs ?? new TsRsBackend()
-    this.softDecision =
-      (options.softDecision ?? true) &&
-      typeof this.viterbi.decodeSoft === 'function' &&
-      this.modulation === CarrierModulation.QPSK
+    const [k, n] = CODE_RATE_FRACTIONS[codeRate]
+    this.frameBytes = (204 * this.carriersPerSymbol * bitsPerCarrier(this.modulation) * k) / n / 8
+    this.viterbi = new StreamingViterbi(codeRate, (byte) => this.pushDecodedByte(byte))
   }
 
   get tsStats() {
@@ -102,70 +90,48 @@ export class OneSegDecoder {
   reset(): void {
     this.timeDeinterleaver.reset()
     this.bitDeinterleaver.reset()
-    this.softBitDeinterleaver.reset()
-    this.byteDeinterleaver?.reset()
+    this.byteDeinterleaver.reset()
     this.descrambler.reset()
+    this.viterbi.reset()
     this.ts.reset()
-    this.pending = []
-    this.carrierByteCount = 0
+    this.byteIndex = 0
+    this.previous = null
   }
 
-  /** Decode a batch of equalized carrier planes into MPEG-TS bytes. */
+  /** Decode a batch of equalized data-carrier planes into MPEG-TS bytes. */
   decode(symbols: readonly ComplexPlane[]): Uint8Array {
-    const planes: ComplexPlane[] = []
     for (const plane of symbols) {
       if (plane.re.length !== this.carriersPerSymbol) {
         throw new Error(`expected ${this.carriersPerSymbol} carriers, got ${plane.re.length}`)
       }
       const deinterleaved = frequencyDeinterleave(plane, this.mode)
-      planes.push(this.timeDeinterleaver.process(deinterleaved.re, deinterleaved.im))
-    }
-
-    const firstData = this.modulation === CarrierModulation.DQPSK ? 1 : 0
-    let decoded: Uint8Array
-    if (this.softDecision) {
-      const soft: number[] = []
-      for (let l = firstData; l < planes.length; l++) {
-        const prev = l > 0 ? planes[l - 1] : null
-        const values = demodulatePlaneSoft(this.modulation, planes[l], prev)
-        for (let i = 0; i < values.length; i++) soft.push(values[i])
+      const td = this.timeDeinterleaver.process(deinterleaved.re, deinterleaved.im)
+      if (this.previous === null && this.modulation === CarrierModulation.DQPSK) {
+        // Differential reference for the first symbol is the previous frame.
+        this.previous = td
+        continue
       }
-      const deinterleaved = this.softBitDeinterleaver.process(Int8Array.from(soft))
-      const start = this.carrierByteCount
-      this.carrierByteCount += Math.floor(deinterleaved.length / this.labelBits)
-      const usableStart = Math.max(0, BIT_INTERLEAVER_MAX_DELAY - start) * this.labelBits
-      const usable = deinterleaved.subarray(usableStart)
-      decoded = this.viterbi.decodeSoft!(usable, this.codeRate, false)
-    } else {
-      const carrierBytes: number[] = []
-      for (let l = firstData; l < planes.length; l++) {
-        const prev = l > 0 ? planes[l - 1] : null
-        const bytes = demodulatePlane(this.modulation, planes[l], prev)
-        for (let i = 0; i < bytes.length; i++) carrierBytes.push(bytes[i])
+      const soft = demodulatePlaneSoft(this.modulation, td, this.previous)
+      this.previous = td
+      const deinterleavedBits = this.bitDeinterleaver.process(soft)
+      for (let i = 0; i < deinterleavedBits.length; i++) {
+        this.viterbi.feedSoft(deinterleavedBits[i])
       }
-      const deinterleavedBytes = this.bitDeinterleaver.process(Uint8Array.from(carrierBytes))
-      const start = this.carrierByteCount
-      this.carrierByteCount += deinterleavedBytes.length
-      const usableStart = Math.max(0, BIT_INTERLEAVER_MAX_DELAY - start)
-      const usable = deinterleavedBytes.subarray(usableStart)
-      const bits = serializeCarrierBytes(usable, this.labelBits)
-      decoded = this.viterbi.decode(bits, this.codeRate, false)
     }
-    let bytes = packBits(decoded)
-    if (this.byteDeinterleaver !== null) bytes = this.byteDeinterleaver.process(bytes)
+    return this.ts.takeBytes()
+  }
 
-    for (let i = 0; i < bytes.length; i++) this.pending.push(bytes[i])
-
-    const produced: number[] = []
-    while (this.pending.length >= RS_CODEWORD_SIZE) {
-      const block = Uint8Array.from(this.pending.splice(0, RS_CODEWORD_SIZE))
-      const descrambled = this.descrambler.processBlock(block)
-      const data = this.rs.decode(descrambled)
-      if (data === null) continue
-      this.ts.pushBlock(data)
-      const out = this.ts.takeBytes()
-      for (let i = 0; i < out.length; i++) produced.push(out[i])
+  private pushDecodedByte(value: number): void {
+    const v = this.byteDeinterleaver.processByte(value)
+    if (this.byteIndex % this.frameBytes === 0) this.descrambler.reset()
+    const mask = this.descrambler.nextMaskByte()
+    const offset = this.byteIndex % RS_CODEWORD_SIZE
+    if (offset === RS_CODEWORD_SIZE - 1) this.packet[0] = v
+    else this.packet[offset + 1] = v ^ mask
+    this.byteIndex++
+    if (offset === RS_CODEWORD_SIZE - 1) {
+      const data = this.rs.decode(this.packet)
+      if (data !== null && data[0] === SYNC_BYTE) this.ts.pushBlock(data)
     }
-    return Uint8Array.from(produced)
   }
 }

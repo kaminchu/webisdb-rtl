@@ -61,10 +61,10 @@ function bitInterleave(input: Uint8Array, delays: readonly number[]): Uint8Array
 
 describe('bit deinterleaving', () => {
   it('exposes the standard delay profiles', () => {
-    expect(bitDeinterleaveDelays(CarrierModulation.DQPSK)).toEqual([0, 120])
-    expect(bitDeinterleaveDelays(CarrierModulation.QPSK)).toEqual([0, 120])
-    expect(bitDeinterleaveDelays(CarrierModulation.QAM16)).toEqual([0, 40, 80, 120])
-    expect(bitDeinterleaveDelays(CarrierModulation.QAM64)).toEqual([0, 24, 48, 72, 96, 120])
+    expect(bitDeinterleaveDelays(CarrierModulation.DQPSK)).toEqual([120, 0])
+    expect(bitDeinterleaveDelays(CarrierModulation.QPSK)).toEqual([120, 0])
+    expect(bitDeinterleaveDelays(CarrierModulation.QAM16)).toEqual([120, 80, 40, 0])
+    expect(bitDeinterleaveDelays(CarrierModulation.QAM64)).toEqual([120, 96, 72, 48, 24, 0])
   })
 
   it('recovers an interleaved stream with a constant latency', () => {

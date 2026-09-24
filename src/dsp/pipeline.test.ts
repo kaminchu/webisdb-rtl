@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { IqChunk } from '../iq/IQSource'
 import type { TmccInfo } from '../models/tmcc'
+import type { StreamKind } from '../models/transportStream'
+import { TransportStream } from '../ts/TransportStream'
 import {
   MODE_PARAMS,
   ONESEG_SAMPLING_HZ,
@@ -19,12 +21,25 @@ function pushFile(
   stats: OneSegPipelineStats | null
   tsBytes: number
   tsPackets: number
+  pes: Record<StreamKind, number>
   states: PipelineState[]
 } {
   const raw = new Uint8Array(readFileSync(path))
   const tmccs: TmccInfo[] = []
   const stats: OneSegPipelineStats[] = []
   const states: PipelineState[] = []
+  const pes: Record<StreamKind, number> = {
+    video: 0,
+    audio: 0,
+    caption: 0,
+    data: 0,
+    other: 0,
+  }
+  const transport = new TransportStream({
+    onPes: (packet) => {
+      pes[packet.kind]++
+    },
+  })
   let tsBytes = 0
   let tsPackets = 0
   const pipe = new OneSegPipeline(
@@ -32,6 +47,7 @@ function pushFile(
       onTs: (b) => {
         tsBytes += b.length
         for (let i = 0; i + 188 <= b.length; i += 188) if (b[i] === 0x47) tsPackets++
+        transport.push(b)
       },
       onTmcc: (t) => tmccs.push(t),
       onStats: (s) => stats.push(s),
@@ -58,6 +74,7 @@ function pushFile(
     stats: stats[stats.length - 1] ?? null,
     tsBytes,
     tsPackets,
+    pes,
     states,
   }
 }
@@ -75,15 +92,16 @@ describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', 
           `[pipeline] ${path} locked=${r.locked !== null} mode=${r.locked?.mode} gi=${r.locked?.guardIntervalRatio} ` +
             `A=${JSON.stringify(r.locked?.layers.A)} B=${JSON.stringify(r.locked?.layers.B)} ` +
             `carrierOffset=${r.stats?.carrierOffset} symbols=${r.stats?.symbolsProcessed} ` +
-            `tsBytes=${r.tsBytes} tsPackets=${r.tsPackets} mer=${r.stats?.quality.merDb?.toFixed(1)}`,
+            `tsBytes=${r.tsBytes} tsPackets=${r.tsPackets} pes=${JSON.stringify(r.pes)} ` +
+            `mer=${r.stats?.quality.merDb?.toFixed(1)}`,
         )
         expect(r.locked).not.toBeNull()
         expect(r.locked?.mode).toBeGreaterThanOrEqual(1)
         expect(r.locked?.mode).toBeLessThanOrEqual(3)
         expect(r.locked?.layers.A).not.toBeNull()
         expect(r.states).toContain('locked')
-        // TS output is best effort; do not assert on it.
-        expect(r.tsBytes).toBeGreaterThanOrEqual(0)
+        expect(r.tsPackets).toBeGreaterThan(0)
+        expect(r.pes.video + r.pes.audio).toBeGreaterThan(0)
       },
       120_000,
     )

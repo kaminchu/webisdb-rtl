@@ -24,6 +24,9 @@ export interface OfdmSyncResult {
 
 const RHO = 0.5
 
+/** Samples searched either side of the expected symbol start for timing tracking. */
+const TIMING_SEARCH = 8
+
 interface Peak {
   index: number
   metric: number
@@ -37,6 +40,7 @@ export class OfdmSynchronizer {
   private readonly cpLength: number
   private readonly symbolLength: number
   private readonly sampleRateHz: number
+  private readonly tracking: boolean
   private bufRe: Float32Array
   private bufIm: Float32Array
   private bufLen = 0
@@ -48,11 +52,12 @@ export class OfdmSynchronizer {
   private lastGammaMag = 0
   private lastPhi = 0
 
-  constructor(fftSize: number, giRatio: number, sampleRateHz: number) {
+  constructor(fftSize: number, giRatio: number, sampleRateHz: number, tracking = false) {
     this.fftSize = fftSize
     this.cpLength = Math.floor(fftSize / giRatio)
     this.symbolLength = fftSize + this.cpLength
     this.sampleRateHz = sampleRateHz
+    this.tracking = tracking
     const cap = 4 * this.symbolLength + fftSize
     this.bufRe = new Float32Array(cap)
     this.bufIm = new Float32Array(cap)
@@ -92,12 +97,16 @@ export class OfdmSynchronizer {
 
     if (this.synced) {
       while (this.nextStart + this.symbolLength <= end) {
-        starts.push(this.nextStart + this.cpLength)
         const rel = this.nextStart - this.baseIndex
-        if (rel + this.fftSize + this.cpLength <= this.bufLen) {
-          const peak = this.findPeak(rel, rel)
-          if (peak) this.trackOffset(peak)
+        const radius = this.tracking ? TIMING_SEARCH : 0
+        if (rel - radius >= 0 && rel + this.fftSize + this.cpLength + radius <= this.bufLen) {
+          const peak = this.findPeak(rel - radius, rel + radius)
+          if (peak) {
+            this.trackOffset(peak)
+            if (this.tracking) this.nextStart = this.baseIndex + peak.index
+          }
         }
+        starts.push(this.nextStart + this.cpLength)
         this.nextStart += this.symbolLength
       }
       const keepFrom = Math.max(0, this.nextStart - this.baseIndex - this.cpLength)

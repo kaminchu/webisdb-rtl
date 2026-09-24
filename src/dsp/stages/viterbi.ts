@@ -7,16 +7,19 @@
  * erasures (value 2), which contribute nothing to the Hamming metric.
  *
  * The encoder convention used here is `reg = ((reg << 1) | input) & 0x7f`
- * with output bit 1 = parity(reg & G1), bit 2 = parity(reg & G2). A test-side
- * encoder must use the same convention.
+ * with output bit 1 = parity(reg & G1), bit 2 = parity(reg & G2). The ARIB
+ * generator polynomials 171/133 octal are drawn with the input entering the
+ * leftmost stage; with this shift-left register they become the bit-reversed
+ * taps 0x4f and 0x6d.
  */
 
 import type { ViterbiBackend, ViterbiRate } from '../backend'
 
-const G1 = 0o171
-const G2 = 0o133
+const G1 = 0x4f
+const G2 = 0x6d
 const NUM_STATES = 64
 const ERASURE = 2
+const TRACEBACK = 128
 
 /** Depuncturing patterns (1 = transmitted, 0 = punctured), one period each. */
 export const PUNCTURE_PATTERNS: Record<ViterbiRate, readonly number[]> = {
@@ -201,4 +204,101 @@ export function convolutionalEncodeBit(
 } {
   const reg = (state << 1) | (input & 1)
   return { state: reg & (NUM_STATES - 1), outputs: branchOutput(state, input & 1) }
+}
+
+/**
+ * Streaming soft-decision Viterbi decoder.
+ *
+ * Mirrors the reference register-exchange decoder: the metric is a correlation
+ * (maximised), positive soft values mean label bit 0, and each decoded bit is
+ * emitted after a fixed `TRACEBACK`-step delay. Feed one depunctured-position
+ * soft value at a time via `feedSoft`; decoded bytes are delivered to `onByte`.
+ */
+export class StreamingViterbi {
+  private readonly rate: ViterbiRate
+  private readonly onByte: (byte: number) => void
+  private readonly metrics = new Float64Array(NUM_STATES)
+  private readonly decisions = new Uint8Array(TRACEBACK * NUM_STATES)
+  private readonly next = new Float64Array(NUM_STATES)
+  private position = 0
+  private pair: number[] = []
+  private stepCount = 0
+  private byte = 0
+  private bits = 0
+
+  constructor(rate: ViterbiRate, onByte: (byte: number) => void) {
+    this.rate = rate
+    this.onByte = onByte
+  }
+
+  reset(): void {
+    this.metrics.fill(0)
+    this.decisions.fill(0)
+    this.position = 0
+    this.pair = []
+    this.stepCount = 0
+    this.byte = 0
+    this.bits = 0
+  }
+
+  /** Feed one soft value (positive means bit 0, 0 means erasure). */
+  feedSoft(soft: number): void {
+    const pattern = PUNCTURE_PATTERNS[this.rate]
+    for (;;) {
+      const keep = pattern[this.position]
+      this.position = (this.position + 1) % pattern.length
+      this.pair.push(keep === 1 ? soft : 0)
+      if (this.pair.length === 2) {
+        const a = this.pair[0]
+        const b = this.pair[1]
+        this.pair = []
+        this.step(a, b)
+      }
+      if (keep === 1) break
+    }
+  }
+
+  private step(a: number, b: number): void {
+    const metrics = this.metrics
+    const next = this.next
+    const slot = (this.stepCount % TRACEBACK) * NUM_STATES
+    for (let state = 0; state < NUM_STATES; state++) {
+      const pred = state >> 1
+      const input = state & 1
+      const regLo = (pred << 1) | input
+      const regHi = ((pred | 32) << 1) | input
+      const lo =
+        metrics[pred] + (parity(regLo & G1) === 0 ? a : -a) + (parity(regLo & G2) === 0 ? b : -b)
+      const hi =
+        metrics[pred | 32] +
+        (parity(regHi & G1) === 0 ? a : -a) +
+        (parity(regHi & G2) === 0 ? b : -b)
+      if (lo >= hi) {
+        next[state] = lo
+        this.decisions[slot + state] = pred
+      } else {
+        next[state] = hi
+        this.decisions[slot + state] = pred | 32
+      }
+    }
+    let best = 0
+    for (let s = 1; s < NUM_STATES; s++) if (next[s] > next[best]) best = s
+    const max = next[best]
+    for (let s = 0; s < NUM_STATES; s++) metrics[s] = next[s] - max
+    this.stepCount++
+    if (this.stepCount < TRACEBACK) return
+
+    let s = best
+    for (let j = 0; j < TRACEBACK - 1; j++) {
+      const k = this.stepCount - j
+      const decisionSlot = (((k - 1) % TRACEBACK) + TRACEBACK) % TRACEBACK
+      s = this.decisions[decisionSlot * NUM_STATES + s]
+    }
+    this.byte = ((this.byte << 1) | (s & 1)) & 0xff
+    this.bits++
+    if (this.bits === 8) {
+      this.bits = 0
+      this.onByte(this.byte)
+    }
+  }
 }

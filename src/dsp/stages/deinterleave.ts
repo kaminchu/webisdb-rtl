@@ -116,9 +116,13 @@ export function frequencyInterleave(
   return { re, im }
 }
 
-const BIT_DELAY_QPSK: readonly number[] = [0, 120]
-const BIT_DELAY_QAM16: readonly number[] = [0, 40, 80, 120]
-const BIT_DELAY_QAM64: readonly number[] = [0, 24, 48, 72, 96, 120]
+/**
+ * Per-label-bit delays. The I (first) bit is delayed by 120 carrier symbols and
+ * the Q (second) bit is not delayed, matching the inner coder's G1/G2 order.
+ */
+const BIT_DELAY_QPSK: readonly number[] = [120, 0]
+const BIT_DELAY_QAM16: readonly number[] = [120, 80, 40, 0]
+const BIT_DELAY_QAM64: readonly number[] = [120, 96, 72, 48, 24, 0]
 
 /** Largest bit deinterleaver delay, in carrier symbols. */
 export const BIT_INTERLEAVER_MAX_DELAY = 120
@@ -310,16 +314,20 @@ export class ByteDeinterleaver {
 
   process(input: Uint8Array): Uint8Array {
     const out = new Uint8Array(input.length)
-    for (let i = 0; i < input.length; i++) {
-      const b = this.index % BYTE_INTERLEAVER_BRANCHES
-      const buf = this.buffers[b]
-      const size = buf.length
-      const p = this.pos[b]
-      buf[p] = input[i]
-      out[i] = buf[(p + 1) % size]
-      this.pos[b] = (p + 1) % size
-      this.index++
-    }
+    for (let i = 0; i < input.length; i++) out[i] = this.processByte(input[i])
+    return out
+  }
+
+  /** Push one byte through the branch selected by the running byte index. */
+  processByte(value: number): number {
+    const b = this.index % BYTE_INTERLEAVER_BRANCHES
+    const buf = this.buffers[b]
+    const size = buf.length
+    const p = this.pos[b]
+    buf[p] = value
+    const out = buf[(p + 1) % size]
+    this.pos[b] = (p + 1) % size
+    this.index++
     return out
   }
 }

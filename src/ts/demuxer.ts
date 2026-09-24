@@ -29,6 +29,13 @@ const PID_EIT = 0x0012
 const PID_TDT_TOT = 0x0014
 const PID_EIT_OTHER = 0x0026
 
+/**
+ * ISDB-T one-seg PMT PID range. The partial-reception stream carries no
+ * decodable PAT, so the PMT is discovered directly on these PIDs.
+ */
+const PID_ONESEG_PMT_MIN = 0x1fc8
+const PID_ONESEG_PMT_MAX = 0x1fcf
+
 const TABLE_PAT = 0x00
 const TABLE_PMT = 0x02
 const TABLE_NIT_ACTUAL = 0x40
@@ -135,6 +142,10 @@ export class Demuxer {
     this.selectedServiceId = null
   }
 
+  private isOneSegPmt(pid: number): boolean {
+    return pid >= PID_ONESEG_PMT_MIN && pid <= PID_ONESEG_PMT_MAX
+  }
+
   private isSectionPid(pid: number): boolean {
     return (
       pid === PID_PAT ||
@@ -143,7 +154,8 @@ export class Demuxer {
       pid === PID_EIT ||
       pid === PID_EIT_OTHER ||
       pid === PID_TDT_TOT ||
-      this.pmtPids.has(pid)
+      this.pmtPids.has(pid) ||
+      this.isOneSegPmt(pid)
     )
   }
 
@@ -151,7 +163,7 @@ export class Demuxer {
     const tableId = section[0]
     if (pid === PID_PAT && tableId === TABLE_PAT) {
       this.handlePat(section)
-    } else if (this.pmtPids.has(pid) && tableId === TABLE_PMT) {
+    } else if ((this.pmtPids.has(pid) || this.isOneSegPmt(pid)) && tableId === TABLE_PMT) {
       this.handlePmt(section)
     } else if (pid === PID_SDT && (tableId === TABLE_SDT_ACTUAL || tableId === TABLE_SDT_OTHER)) {
       this.callbacks.onSdt?.(decodeSdt(section))
@@ -181,7 +193,8 @@ export class Demuxer {
   private handlePmt(section: Uint8Array): void {
     const pmt = decodePmt(section)
     this.pmts.set(pmt.programNumber, pmt)
-    if (pmt.programNumber === this.selectedServiceId) this.applySelectedPmt(pmt)
+    if (this.selectedServiceId === null) this.selectService(pmt.programNumber)
+    else if (pmt.programNumber === this.selectedServiceId) this.applySelectedPmt(pmt)
     this.callbacks.onPmt?.(pmt)
   }
 
