@@ -1,6 +1,7 @@
-import type { AvcConfig, PesPacket } from '../models/media'
+import type { AudioChannelMode, AvcConfig, PesPacket } from '../models/media'
 import { AudioStreamDecoder } from './audioDecoder'
 import type { AudioDecoderConfigInput } from './audioDecoder'
+import { CaptionRenderer } from './caption'
 import { AvSync, SyncDecision, microsToPts90k, pts90kToMicros } from './avSync'
 import { VideoStreamDecoder, isKeyframe } from './videoDecoder'
 import type { VideoDecoderConfigInput } from './videoDecoder'
@@ -46,6 +47,8 @@ export class OneSegPlayer {
   private readonly context2d: CanvasRenderingContext2D | null
   private readonly videoDecoder: VideoStreamDecoder
   private readonly audioDecoder: AudioStreamDecoder
+  private readonly captions = new CaptionRenderer()
+  private subtitlesEnabled = false
   private readonly avSync: AvSync
   private readonly pending: VideoFrame[] = []
   private drainScheduled = false
@@ -127,6 +130,8 @@ export class OneSegPlayer {
           this.videoDecoder.pushSample(units[i], start + i * step, isKeyframe(units[i]))
         }
       }
+    } else if (packet.kind === 'caption') {
+      if (this.subtitlesEnabled) this.captions.update(packet.data)
     } else if (packet.kind === 'audio') {
       this.counters.audioSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
@@ -153,6 +158,15 @@ export class OneSegPlayer {
     if (!muted) this.audioDecoder.resume()
   }
 
+  setAudioChannel(mode: AudioChannelMode): void {
+    this.audioDecoder.setChannelMode(mode)
+  }
+
+  setSubtitlesEnabled(enabled: boolean): void {
+    this.subtitlesEnabled = enabled
+    if (!enabled) this.captions.clear()
+  }
+
   resume(): void {
     this.audioDecoder.resume()
   }
@@ -164,6 +178,7 @@ export class OneSegPlayer {
     this.avSync.reset()
     this.videoDecoder.reset()
     this.audioDecoder.reset()
+    this.captions.clear()
     this.clearPending()
   }
 
@@ -209,6 +224,7 @@ export class OneSegPlayer {
           this.canvas.height = height
         }
         context.drawImage(frame, 0, 0, width, height)
+        if (this.subtitlesEnabled) this.captions.draw(context, width, height)
       }
       this.counters.videoFramesDecoded++
     } finally {

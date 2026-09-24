@@ -24,6 +24,15 @@ export interface AvcConfig {
   description: Uint8Array
 }
 
+/** Audio presentation selected by the viewer: stereo, 主音声, or 副音声. */
+export const AudioChannelMode = {
+  Stereo: 'stereo',
+  Main: 'main',
+  Sub: 'sub',
+} as const
+
+export type AudioChannelMode = (typeof AudioChannelMode)[keyof typeof AudioChannelMode]
+
 export interface AudioStreamInfo {
   /** ISO_639 language code, if signalled. */
   language?: string

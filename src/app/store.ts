@@ -17,8 +17,6 @@ import { emptyBufferMetrics, emptyReceptionQuality, emptyThroughput } from '../m
 export const Screen = {
   Watch: 'watch',
   Epg: 'epg',
-  Scan: 'scan',
-  Debug: 'debug',
   Settings: 'settings',
 } as const
 
@@ -62,6 +60,7 @@ export interface SpectrumSlice {
 
 export interface AppState {
   screen: Screen
+  sidebarOpen: boolean
   receiver: ReceiverSlice
   diagnostics: DiagnosticsSlice
   spectrum: SpectrumSlice
@@ -88,6 +87,7 @@ export function createEmptyDiagnostics(): DiagnosticsSlice {
 export function createInitialState(): AppState {
   return {
     screen: Screen.Watch,
+    sidebarOpen: false,
     receiver: {
       sourceKind: 'none',
       label: '未接続',

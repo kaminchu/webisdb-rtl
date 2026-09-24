@@ -1,32 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button } from '../../components/Button'
-import { Panel } from '../../components/Panel'
-import { StatusBadge } from '../../components/StatusBadge'
+import { openSidebar } from '../../app/navigation'
 import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
-import { formatFrequency } from '../../models/channel'
 import { OneSegPlayer } from '../../media'
 import type { PlayerStats } from '../../media/player'
-import { BufferPanel } from '../receiver/BufferPanel'
-import { ConnectPanel } from '../receiver/ConnectPanel'
-import { MetricsPanel } from '../receiver/MetricsPanel'
-import { SpectrumView } from '../receiver/SpectrumView'
-import { TuningPanel } from '../receiver/TuningPanel'
+import type { AudioChannelMode } from '../../models/media'
+import { loadSettings, saveSettings } from '../../storage/settings'
+import { DebugScreen } from '../debug/DebugScreen'
+import { CompactGuide } from './CompactGuide'
 import { PlayerView } from './PlayerView'
+import { WatchControls } from './WatchControls'
+import { useDockedGuide } from './useDockedGuide'
 import styles from './WatchScreen.module.css'
 
 export function WatchScreen() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const playerRef = useRef<OneSegPlayer | null>(null)
-  const [muted, setMuted] = useState(false)
+  const [overlayOpen, setOverlayOpen] = useState(false)
   const [playerStats, setPlayerStats] = useState<PlayerStats | null>(null)
   const [playerError, setPlayerError] = useState<string | null>(null)
+  const [audioChannel, setAudioChannel] = useState<AudioChannelMode>(
+    () => loadSettings().ui.audioChannel,
+  )
+  const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
+  const [showDebug] = useState(() => loadSettings().debug.showOverlay)
+  const docked = useDockedGuide()
 
   const sourceKind = useStore((s) => s.receiver.sourceKind)
-  const label = useStore((s) => s.receiver.label)
-  const state = useStore((s) => s.receiver.state)
-  const channel = useStore((s) => s.receiver.channel)
-  const frequency = useStore((s) => s.receiver.frequency)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -34,6 +34,9 @@ export function WatchScreen() {
     const player = new OneSegPlayer(canvas, { onError: (error) => setPlayerError(error.message) })
     playerRef.current = player
     receiverController.setPlayer(player)
+    const settings = loadSettings()
+    player.setAudioChannel(settings.ui.audioChannel)
+    player.setSubtitlesEnabled(settings.ui.subtitles)
     const timer = window.setInterval(() => setPlayerStats(player.stats), 500)
     return () => {
       window.clearInterval(timer)
@@ -45,54 +48,81 @@ export function WatchScreen() {
 
   const connected = sourceKind !== 'none'
 
-  const toggleMute = () => {
-    const next = !muted
-    setMuted(next)
-    playerRef.current?.setMuted(next)
+  const changeAudio = (mode: AudioChannelMode) => {
+    setAudioChannel(mode)
+    saveSettings({ ui: { audioChannel: mode } })
+    playerRef.current?.setAudioChannel(mode)
+  }
+
+  const toggleSubtitles = () => {
+    const next = !subtitles
+    setSubtitles(next)
+    saveSettings({ ui: { subtitles: next } })
+    playerRef.current?.setSubtitlesEnabled(next)
   }
 
   return (
     <div
-      className={styles.layout}
+      className={styles.root}
       onPointerDown={() => playerRef.current?.resume()}
       onKeyDown={() => playerRef.current?.resume()}
     >
-      <Panel title="ワンセグ視聴" className={styles.wide}>
+      <div className={styles.stage} onClick={() => setOverlayOpen((open) => !open)}>
         <PlayerView canvasRef={canvasRef} connected={connected} />
-        <div className={styles.statusLine}>
-          <StatusBadge state={state} />
-          <span className={styles.label}>{label}</span>
-          {channel !== null && <span className={styles.meta}>ch {channel}</span>}
-          {frequency > 0 && <span className={styles.meta}>{formatFrequency(frequency)}</span>}
-        </div>
-        <div className={styles.statusLine}>
-          映像描画 {playerStats?.videoFramesDecoded ?? 0} フレーム / 音声再生{' '}
-          {playerStats?.audioBuffersQueued ?? 0} バッファ
-        </div>
-        {playerError && <div role="status">直近のデコードエラー: {playerError}</div>}
-        <div className={styles.controls}>
-          <Button type="button" variant={muted ? 'default' : 'primary'} onClick={toggleMute}>
-            {muted ? 'ミュート解除' : 'ミュート'}
-          </Button>
-          <Button type="button" onClick={() => receiverController.stop()} disabled={!connected}>
-            停止
-          </Button>
-          <Button
-            type="button"
-            onClick={() => receiverController.discardBuffer()}
-            disabled={!connected}
+
+        {overlayOpen && (
+          <div
+            className={styles.overlay}
+            onClick={(event) => {
+              event.stopPropagation()
+              setOverlayOpen(false)
+            }}
           >
-            バッファ破棄
-          </Button>
+            <button
+              type="button"
+              className={styles.sidebarButton}
+              aria-label="メニューを開く"
+              onClick={(event) => {
+                event.stopPropagation()
+                openSidebar()
+              }}
+            >
+              &gt;
+            </button>
+
+            <WatchControls
+              audioChannel={audioChannel}
+              subtitles={subtitles}
+              onAudioChange={changeAudio}
+              onToggleSubtitles={toggleSubtitles}
+            />
+
+            {showDebug && (
+              <div className={styles.debugLayer} onClick={(event) => event.stopPropagation()}>
+                <DebugScreen />
+                <p className={styles.statsLine}>
+                  フレーム {playerStats?.videoFramesDecoded ?? 0} / 音声{' '}
+                  {playerStats?.audioBuffersQueued ?? 0} / 破棄 {playerStats?.dropped ?? 0}
+                </p>
+              </div>
+            )}
+
+            {!docked && (
+              <div className={styles.guideLayer} onClick={(event) => event.stopPropagation()}>
+                <CompactGuide onProgramSelect={() => setOverlayOpen(false)} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {playerError && <div className={styles.errorLine}>デコードエラー: {playerError}</div>}
+      </div>
+
+      {docked && (
+        <div className={styles.dockedGuide}>
+          <CompactGuide />
         </div>
-      </Panel>
-      <ConnectPanel />
-      <TuningPanel />
-      <Panel title="スペクトラム" className={styles.wide}>
-        <SpectrumView />
-      </Panel>
-      <MetricsPanel />
-      <BufferPanel />
+      )}
     </div>
   )
 }

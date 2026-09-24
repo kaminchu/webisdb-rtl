@@ -24,3 +24,11 @@ export function startHashNavigation(): () => void {
   window.addEventListener('hashchange', applyHashToStore)
   return () => window.removeEventListener('hashchange', applyHashToStore)
 }
+
+export function openSidebar(): void {
+  if (!store.getState().sidebarOpen) store.setState({ sidebarOpen: true })
+}
+
+export function closeSidebar(): void {
+  if (store.getState().sidebarOpen) store.setState({ sidebarOpen: false })
+}

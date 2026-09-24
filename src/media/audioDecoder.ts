@@ -1,3 +1,5 @@
+import type { AudioChannelMode } from '../models/media'
+
 export interface AudioDecoderConfigInput {
   codec: string
   sampleRate: number
@@ -46,6 +48,7 @@ export class AudioStreamDecoder {
   private config: AudioDecoderConfig | null = null
   private baseContextTime: number | null = null
   private basePtsSec: number | null = null
+  private channelMode: AudioChannelMode = 'stereo'
 
   constructor(options: AudioStreamDecoderOptions = {}) {
     this.onError = options.onError
@@ -121,6 +124,11 @@ export class AudioStreamDecoder {
     if (this.gain) this.gain.gain.value = muted ? 0 : 1
   }
 
+  /** Select 主音声 / 副音声 from a dual-mono stream, or leave stereo untouched. */
+  setChannelMode(mode: AudioChannelMode): void {
+    this.channelMode = mode
+  }
+
   resume(): void {
     if (this.context && this.context.state === 'suspended') void this.context.resume()
   }
@@ -178,6 +186,14 @@ export class AudioStreamDecoder {
     const buffer = context.createBuffer(channels, frames, data.sampleRate)
     for (let channel = 0; channel < channels; channel++) {
       data.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' })
+    }
+    if (this.channelMode !== 'stereo' && channels >= 2) {
+      const source = buffer.getChannelData(this.channelMode === 'main' ? 0 : 1)
+      for (let channel = 0; channel < channels; channel++) {
+        if (channel !== (this.channelMode === 'main' ? 0 : 1)) {
+          buffer.getChannelData(channel).set(source)
+        }
+      }
     }
 
     const ptsSec = data.timestamp / 1_000_000

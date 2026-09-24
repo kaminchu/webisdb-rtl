@@ -6,14 +6,16 @@
  * safe under SSR / private-mode where `localStorage` may be missing or throw.
  */
 
+import { AudioChannelMode } from '../models/media'
+
 export interface AppSettings {
   lastRegionId: string | null
   lastChannel: number | null
   lastFrequency: number | null
   gainDb: number | null
   sampleRate: number | null
-  ui: { theme?: 'dark' | 'light' }
-  debug: { spectrum: boolean; showPsi: boolean; showPidList: boolean }
+  ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
+  debug: { spectrum: boolean; showPsi: boolean; showPidList: boolean; showOverlay: boolean }
 }
 
 /** Deep-partial patch accepted by `saveSettings`; nested `ui`/`debug` merge field-wise. */
@@ -31,8 +33,8 @@ export function defaultSettings(): AppSettings {
     lastFrequency: null,
     gainDb: null,
     sampleRate: null,
-    ui: {},
-    debug: { spectrum: false, showPsi: false, showPidList: false },
+    ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
+    debug: { spectrum: false, showPsi: false, showPidList: false, showOverlay: false },
   }
 }
 
@@ -66,6 +68,14 @@ function asTheme(value: unknown): 'dark' | 'light' | undefined {
   return value === 'dark' || value === 'light' ? value : undefined
 }
 
+function asAudioChannel(value: unknown): AudioChannelMode | undefined {
+  return value === AudioChannelMode.Stereo ||
+    value === AudioChannelMode.Main ||
+    value === AudioChannelMode.Sub
+    ? value
+    : undefined
+}
+
 function readRaw(): Partial<AppSettings> {
   const storage = getStorage()
   if (!storage) return {}
@@ -83,17 +93,24 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
   const ui = isRecord(patch.ui) ? patch.ui : {}
   const debug = isRecord(patch.debug) ? patch.debug : {}
   const theme = asTheme(ui.theme)
+  const audioChannel = asAudioChannel(ui.audioChannel)
   return {
     lastRegionId: asStringOrNull(patch.lastRegionId, base.lastRegionId),
     lastChannel: asNumberOrNull(patch.lastChannel, base.lastChannel),
     lastFrequency: asNumberOrNull(patch.lastFrequency, base.lastFrequency),
     gainDb: asNumberOrNull(patch.gainDb, base.gainDb),
     sampleRate: asNumberOrNull(patch.sampleRate, base.sampleRate),
-    ui: theme === undefined ? { ...base.ui } : { ...base.ui, theme },
+    ui: {
+      ...base.ui,
+      ...(theme === undefined ? {} : { theme }),
+      subtitles: asBoolean(ui.subtitles, base.ui.subtitles),
+      audioChannel: audioChannel ?? base.ui.audioChannel,
+    },
     debug: {
       spectrum: asBoolean(debug.spectrum, base.debug.spectrum),
       showPsi: asBoolean(debug.showPsi, base.debug.showPsi),
       showPidList: asBoolean(debug.showPidList, base.debug.showPidList),
+      showOverlay: asBoolean(debug.showOverlay, base.debug.showOverlay),
     },
   }
 }

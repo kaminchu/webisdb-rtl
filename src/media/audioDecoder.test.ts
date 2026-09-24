@@ -30,6 +30,8 @@ describe('AudioStreamDecoder', () => {
     expect(decoder.configured).toBe(true)
     expect(() => decoder.pushSample(Uint8Array.from([0xff, 0xf1]), 0)).not.toThrow()
     expect(() => decoder.setMuted(true)).not.toThrow()
+    expect(() => decoder.setChannelMode('main')).not.toThrow()
+    expect(() => decoder.setChannelMode('sub')).not.toThrow()
     expect(() => decoder.resume()).not.toThrow()
     expect(() => decoder.reset()).not.toThrow()
     expect(() => decoder.close()).not.toThrow()

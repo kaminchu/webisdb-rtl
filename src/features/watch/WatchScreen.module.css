@@ -1,69 +1,135 @@
-.layout {
-  display: grid;
-  gap: var(--space-4);
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  align-items: start;
+.root {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  overflow: hidden;
 }
 
-.wide {
-  grid-column: 1 / -1;
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
 }
 
 .videoWrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  border-radius: var(--radius-md);
-  overflow: hidden;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .canvas {
   width: 100%;
   height: 100%;
+  object-fit: contain;
   display: block;
 }
 
-.overlay {
+.connectHint {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  background: rgb(11 16 32 / 75%);
+  background: rgb(11 16 32 / 55%);
   text-align: center;
+  pointer-events: none;
 }
 
-.overlayText {
+.connectText {
   margin: 0;
-  max-width: 32ch;
+  max-width: 34ch;
   font-size: 13px;
   color: var(--color-text-muted);
 }
 
-.statusLine {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-3);
-  font-size: 12px;
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
 }
 
-.label {
+.sidebarButton {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-strong);
+  background: rgb(11 16 32 / 82%);
   color: var(--color-text);
-  overflow-wrap: anywhere;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
 }
 
-.meta {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
+.sidebarButton:hover {
+  border-color: var(--color-accent);
 }
 
-.controls {
+.guideLayer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
   display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-3);
+  max-height: 45%;
+}
+
+.guideLayer > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.debugLayer {
+  position: absolute;
+  top: 64px;
+  left: var(--space-3);
+  right: 132px;
+  max-height: 60%;
+  overflow: auto;
+  z-index: 6;
+}
+
+.statsLine {
+  margin: var(--space-1) 0 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.dockedGuide {
+  flex: none;
+  display: flex;
+  max-height: 45%;
+  min-height: 0;
+}
+
+.dockedGuide > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.errorLine {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 7;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: rgb(255 92 108 / 20%);
+  color: var(--color-bad);
+  font-size: 11px;
 }

@@ -34,8 +34,26 @@ describe('settings', () => {
     saveSettings({ debug: { spectrum: true, showPsi: false, showPidList: false } })
     saveSettings({ ui: { theme: 'dark' } })
     const settings = saveSettings({ debug: { showPsi: true } })
-    expect(settings.debug).toEqual({ spectrum: true, showPsi: true, showPidList: false })
-    expect(settings.ui).toEqual({ theme: 'dark' })
+    expect(settings.debug).toEqual({
+      spectrum: true,
+      showPsi: true,
+      showPidList: false,
+      showOverlay: false,
+    })
+    expect(settings.ui).toEqual({ theme: 'dark', subtitles: false, audioChannel: 'stereo' })
+  })
+
+  it('persists subtitle, audio channel, and debug overlay preferences', () => {
+    saveSettings({ ui: { subtitles: true, audioChannel: 'sub' }, debug: { showOverlay: true } })
+    const settings = loadSettings()
+    expect(settings.ui.subtitles).toBe(true)
+    expect(settings.ui.audioChannel).toBe('sub')
+    expect(settings.debug.showOverlay).toBe(true)
+  })
+
+  it('rejects an invalid audio channel', () => {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ui: { audioChannel: 'surround' } }))
+    expect(loadSettings().ui.audioChannel).toBe('stereo')
   })
 
   it('tolerates malformed JSON', () => {
