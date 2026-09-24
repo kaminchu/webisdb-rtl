@@ -1,0 +1,401 @@
+//! DC removal, fractional resampling and NCO correction kernels.
+//!
+//! Mirrors `src/dsp/stages/dcRemoval.ts`, `src/dsp/stages/resample.ts` and
+//! `NcoCorrector` in `src/dsp/stages/frequencyCorrection.ts`. State is kept in
+//! f64 exactly as the JavaScript reference; complex samples are stored as f32.
+
+use core::alloc::Layout;
+use core::f64::consts::PI;
+use std::alloc::{alloc, dealloc};
+
+#[no_mangle]
+pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
+}
+
+#[no_mangle]
+pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
+    if ptr.is_null() || size == 0 {
+        return;
+    }
+    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
+}
+
+/// One-pole running-mean complex high-pass.
+pub struct DcRemoval {
+    alpha: f64,
+    dc_re: f64,
+    dc_im: f64,
+}
+
+impl DcRemoval {
+    fn new(alpha: f64) -> Self {
+        Self {
+            alpha,
+            dc_re: 0.0,
+            dc_im: 0.0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.dc_re = 0.0;
+        self.dc_im = 0.0;
+    }
+
+    fn process(&mut self, re: &mut [f32], im: &mut [f32]) {
+        let alpha = self.alpha;
+        let mut dc_re = self.dc_re;
+        let mut dc_im = self.dc_im;
+        for i in 0..re.len() {
+            dc_re += alpha * (re[i] as f64 - dc_re);
+            dc_im += alpha * (im[i] as f64 - dc_im);
+            re[i] = (re[i] as f64 - dc_re) as f32;
+            im[i] = (im[i] as f64 - dc_im) as f32;
+        }
+        self.dc_re = dc_re;
+        self.dc_im = dc_im;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dc_create(alpha: f64) -> *mut DcRemoval {
+    Box::into_raw(Box::new(DcRemoval::new(alpha)))
+}
+
+#[no_mangle]
+pub extern "C" fn dc_destroy(ptr: *mut DcRemoval) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dc_reset(ptr: *mut DcRemoval) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { (*ptr).reset() };
+}
+
+#[no_mangle]
+pub extern "C" fn dc_process(ptr: *mut DcRemoval, re_ptr: *mut f32, im_ptr: *mut f32, n: usize) {
+    if ptr.is_null() || n == 0 {
+        return;
+    }
+    let re = unsafe { core::slice::from_raw_parts_mut(re_ptr, n) };
+    let im = unsafe { core::slice::from_raw_parts_mut(im_ptr, n) };
+    unsafe { (*ptr).process(re, im) };
+}
+
+const HALF_TAPS: usize = 16;
+const PHASES: usize = 256;
+
+fn sinc(x: f64) -> f64 {
+    if x == 0.0 {
+        return 1.0;
+    }
+    let px = PI * x;
+    px.sin() / px
+}
+
+fn build_table(cutoff_norm: f64) -> Vec<f32> {
+    let taps = 2 * HALF_TAPS;
+    let mut table = vec![0.0f32; PHASES * taps];
+    for ph in 0..PHASES {
+        let frac = ph as f64 / PHASES as f64;
+        let mut sum = 0.0f64;
+        for j in -(HALF_TAPS as i64 - 1)..=(HALF_TAPS as i64) {
+            let t = j as f64 - frac;
+            let window = 0.54 + 0.46 * ((PI * t) / HALF_TAPS as f64).cos();
+            let value = 2.0 * cutoff_norm * sinc(2.0 * cutoff_norm * t) * window;
+            table[ph * taps + (j + HALF_TAPS as i64 - 1) as usize] = value as f32;
+            sum += value;
+        }
+        let inv = if sum != 0.0 { 1.0 / sum } else { 0.0 };
+        for k in 0..taps {
+            let idx = ph * taps + k;
+            table[idx] = (table[idx] as f64 * inv) as f32;
+        }
+    }
+    table
+}
+
+/// Windowed-sinc polyphase fractional resampler.
+pub struct FractionalResampler {
+    step_int: i64,
+    step_frac: f64,
+    table: Vec<f32>,
+    buf_re: Vec<f32>,
+    buf_im: Vec<f32>,
+    buf_len: usize,
+    base: i64,
+    cursor: i64,
+    phase: f64,
+    out_re: Vec<f32>,
+    out_im: Vec<f32>,
+}
+
+impl FractionalResampler {
+    fn new(src_rate: f64, dst_rate: f64, cutoff_hz: f64) -> Option<Self> {
+        if src_rate <= 0.0 || dst_rate <= 0.0 {
+            return None;
+        }
+        let step = src_rate / dst_rate;
+        let step_int = step.floor() as i64;
+        let step_frac = step - step_int as f64;
+        let cutoff_norm = (cutoff_hz / src_rate).min(0.4999);
+        let mut rs = Self {
+            step_int,
+            step_frac,
+            table: build_table(cutoff_norm),
+            buf_re: vec![0.0; 4096],
+            buf_im: vec![0.0; 4096],
+            buf_len: 0,
+            base: 0,
+            cursor: 0,
+            phase: 0.0,
+            out_re: Vec::new(),
+            out_im: Vec::new(),
+        };
+        rs.reset();
+        Some(rs)
+    }
+
+    fn reset(&mut self) {
+        self.buf_re[..HALF_TAPS].fill(0.0);
+        self.buf_im[..HALF_TAPS].fill(0.0);
+        self.buf_len = HALF_TAPS;
+        self.base = -(HALF_TAPS as i64);
+        self.cursor = 0;
+        self.phase = 0.0;
+    }
+
+    fn append(&mut self, re: &[f32], im: &[f32]) {
+        let need = self.buf_len + re.len();
+        if need > self.buf_re.len() {
+            let mut cap = if self.buf_re.is_empty() {
+                1024
+            } else {
+                self.buf_re.len()
+            };
+            while cap < need {
+                cap <<= 1;
+            }
+            self.buf_re.resize(cap, 0.0);
+            self.buf_im.resize(cap, 0.0);
+        }
+        self.buf_re[self.buf_len..need].copy_from_slice(re);
+        self.buf_im[self.buf_len..need].copy_from_slice(im);
+        self.buf_len = need;
+    }
+
+    fn process(&mut self, re: &[f32], im: &[f32]) {
+        self.append(re, im);
+        self.out_re.clear();
+        self.out_im.clear();
+        let taps = 2 * HALF_TAPS;
+        loop {
+            let i0 = self.cursor - self.base;
+            if i0 + HALF_TAPS as i64 >= self.buf_len as i64 {
+                break;
+            }
+            let mut ph = (self.phase * PHASES as f64).floor() as i64;
+            if ph >= PHASES as i64 {
+                ph = PHASES as i64 - 1;
+            }
+            if ph < 0 {
+                ph = 0;
+            }
+            let base_idx = i0 - (HALF_TAPS as i64 - 1);
+            let off = ph as usize * taps;
+            let mut sr = 0.0f64;
+            let mut si = 0.0f64;
+            for k in 0..taps {
+                let coef = self.table[off + k] as f64;
+                sr += self.buf_re[base_idx as usize + k] as f64 * coef;
+                si += self.buf_im[base_idx as usize + k] as f64 * coef;
+            }
+            self.out_re.push(sr as f32);
+            self.out_im.push(si as f32);
+            self.phase += self.step_frac;
+            self.cursor += self.step_int;
+            if self.phase >= 1.0 {
+                self.phase -= 1.0;
+                self.cursor += 1;
+            }
+        }
+
+        let keep_from = self.cursor - self.base - (HALF_TAPS as i64 - 1);
+        if keep_from > 0 {
+            let kf = keep_from as usize;
+            self.buf_re.copy_within(kf..self.buf_len, 0);
+            self.buf_im.copy_within(kf..self.buf_len, 0);
+            self.buf_len -= kf;
+            self.base += keep_from;
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn resample_create(
+    src_rate: f64,
+    dst_rate: f64,
+    cutoff_hz: f64,
+) -> *mut FractionalResampler {
+    match FractionalResampler::new(src_rate, dst_rate, cutoff_hz) {
+        Some(rs) => Box::into_raw(Box::new(rs)),
+        None => core::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn resample_destroy(ptr: *mut FractionalResampler) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn resample_reset(ptr: *mut FractionalResampler) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { (*ptr).reset() };
+}
+
+#[no_mangle]
+pub extern "C" fn resample_process(
+    ptr: *mut FractionalResampler,
+    re_ptr: *const f32,
+    im_ptr: *const f32,
+    n: usize,
+) -> usize {
+    if ptr.is_null() {
+        return 0;
+    }
+    let re: &[f32] = if n == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(re_ptr, n) }
+    };
+    let im: &[f32] = if n == 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(im_ptr, n) }
+    };
+    let rs = unsafe { &mut *ptr };
+    rs.process(re, im);
+    rs.out_re.len()
+}
+
+#[no_mangle]
+pub extern "C" fn resample_out_re(ptr: *const FractionalResampler) -> *const f32 {
+    if ptr.is_null() {
+        return core::ptr::null();
+    }
+    unsafe { (*ptr).out_re.as_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn resample_out_im(ptr: *const FractionalResampler) -> *const f32 {
+    if ptr.is_null() {
+        return core::ptr::null();
+    }
+    unsafe { (*ptr).out_im.as_ptr() }
+}
+
+/// Numerically controlled oscillator frequency-offset correction.
+pub struct NcoCorrector {
+    offset_hz: f64,
+    sample_rate_hz: f64,
+    phase: f64,
+}
+
+impl NcoCorrector {
+    fn new(offset_hz: f64, sample_rate_hz: f64) -> Self {
+        Self {
+            offset_hz,
+            sample_rate_hz,
+            phase: 0.0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.phase = 0.0;
+    }
+
+    fn process(&mut self, re: &mut [f32], im: &mut [f32]) {
+        let step = (-2.0 * PI * self.offset_hz) / self.sample_rate_hz;
+        let mut phase = self.phase;
+        for i in 0..re.len() {
+            let c = phase.cos();
+            let s = phase.sin();
+            let r = re[i] as f64;
+            let q = im[i] as f64;
+            re[i] = (r * c - q * s) as f32;
+            im[i] = (r * s + q * c) as f32;
+            phase += step;
+            if phase > PI {
+                phase -= 2.0 * PI;
+            } else if phase < -PI {
+                phase += 2.0 * PI;
+            }
+        }
+        self.phase = phase;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nco_create(offset_hz: f64, sample_rate_hz: f64) -> *mut NcoCorrector {
+    Box::into_raw(Box::new(NcoCorrector::new(offset_hz, sample_rate_hz)))
+}
+
+#[no_mangle]
+pub extern "C" fn nco_destroy(ptr: *mut NcoCorrector) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nco_reset(ptr: *mut NcoCorrector) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { (*ptr).reset() };
+}
+
+#[no_mangle]
+pub extern "C" fn nco_set_offset(ptr: *mut NcoCorrector, offset_hz: f64) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { (*ptr).offset_hz = offset_hz };
+}
+
+#[no_mangle]
+pub extern "C" fn nco_process(
+    ptr: *mut NcoCorrector,
+    re_ptr: *mut f32,
+    im_ptr: *mut f32,
+    n: usize,
+) {
+    if ptr.is_null() || n == 0 {
+        return;
+    }
+    let re = unsafe { core::slice::from_raw_parts_mut(re_ptr, n) };
+    let im = unsafe { core::slice::from_raw_parts_mut(im_ptr, n) };
+    unsafe { (*ptr).process(re, im) };
+}

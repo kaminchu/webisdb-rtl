@@ -12,17 +12,18 @@
  * must start feeding symbols at a TMCC frame boundary.
  */
 
-import { bitsPerCarrier, demodulatePlaneSoft, type ComplexPlane } from './stages/carrierDemod'
-import {
-  ByteDeinterleaver,
-  SoftBitDeinterleaver,
-  TimeDeinterleaver,
-  frequencyDeinterleave,
-} from './stages/deinterleave'
+import { bitsPerCarrier, type ComplexPlane } from './stages/carrierDemod'
 import { EnergyDescrambler, RS_CODEWORD_SIZE, SYNC_BYTE } from './stages/energyDispersal'
-import { TsRsBackend } from './stages/reedSolomon'
 import { TsGenerator } from './stages/tsGenerator'
-import { StreamingViterbi } from './stages/viterbi'
+import { demodulatePlaneSoftWasm } from './wasm/demap'
+import {
+  WasmByteDeinterleaver,
+  WasmSoftBitDeinterleaver,
+  WasmTimeDeinterleaver,
+  frequencyDeinterleaveWasm,
+} from './wasm/deinterleave'
+import { WasmRsBackend } from './wasm/reedSolomon'
+import { WasmStreamingViterbi } from './wasm/viterbi'
 import {
   CarrierModulation,
   MODE_PARAMS,
@@ -49,12 +50,12 @@ export class OneSegDecoder {
   readonly mode: TransmissionMode
   readonly modulation: CarrierModulation
 
-  private readonly timeDeinterleaver: TimeDeinterleaver
-  private readonly bitDeinterleaver: SoftBitDeinterleaver
-  private readonly byteDeinterleaver = new ByteDeinterleaver()
+  private readonly timeDeinterleaver: WasmTimeDeinterleaver
+  private readonly bitDeinterleaver: WasmSoftBitDeinterleaver
+  private readonly byteDeinterleaver = new WasmByteDeinterleaver()
   private readonly descrambler = new EnergyDescrambler()
   private readonly ts = new TsGenerator()
-  private readonly viterbi: StreamingViterbi
+  private readonly viterbi: WasmStreamingViterbi
   private readonly rs: RsBackend
   private readonly carriersPerSymbol: number
   private readonly frameBytes: number
@@ -72,15 +73,15 @@ export class OneSegDecoder {
     this.modulation = layer.modulation as CarrierModulation
     const codeRate = codeRateName(layer.codeRate)
     this.carriersPerSymbol = MODE_PARAMS[this.mode].dataCarriersPerSegment
-    this.timeDeinterleaver = new TimeDeinterleaver(
+    this.timeDeinterleaver = new WasmTimeDeinterleaver(
       this.mode,
       timeInterleaveLength(layer.timeInterleave, this.mode),
     )
-    this.bitDeinterleaver = new SoftBitDeinterleaver(this.modulation)
-    this.rs = options.rs ?? new TsRsBackend()
+    this.bitDeinterleaver = new WasmSoftBitDeinterleaver(this.modulation)
+    this.rs = options.rs ?? new WasmRsBackend()
     const [k, n] = CODE_RATE_FRACTIONS[codeRate]
     this.frameBytes = (204 * this.carriersPerSymbol * bitsPerCarrier(this.modulation) * k) / n / 8
-    this.viterbi = new StreamingViterbi(codeRate, (byte) => this.pushDecodedByte(byte))
+    this.viterbi = new WasmStreamingViterbi(codeRate, (byte) => this.pushDecodedByte(byte))
   }
 
   get tsStats() {
@@ -98,25 +99,31 @@ export class OneSegDecoder {
     this.previous = null
   }
 
+  /** Release the WASM decoder state; the instance must not be used afterwards. */
+  dispose(): void {
+    this.timeDeinterleaver.destroy()
+    this.bitDeinterleaver.destroy()
+    this.byteDeinterleaver.destroy()
+    this.viterbi.dispose()
+  }
+
   /** Decode a batch of equalized data-carrier planes into MPEG-TS bytes. */
   decode(symbols: readonly ComplexPlane[]): Uint8Array {
     for (const plane of symbols) {
       if (plane.re.length !== this.carriersPerSymbol) {
         throw new Error(`expected ${this.carriersPerSymbol} carriers, got ${plane.re.length}`)
       }
-      const deinterleaved = frequencyDeinterleave(plane, this.mode)
+      const deinterleaved = frequencyDeinterleaveWasm(plane, this.mode)
       const td = this.timeDeinterleaver.process(deinterleaved.re, deinterleaved.im)
       if (this.previous === null && this.modulation === CarrierModulation.DQPSK) {
         // Differential reference for the first symbol is the previous frame.
         this.previous = td
         continue
       }
-      const soft = demodulatePlaneSoft(this.modulation, td, this.previous)
+      const soft = demodulatePlaneSoftWasm(this.modulation, td, this.previous)
       this.previous = td
       const deinterleavedBits = this.bitDeinterleaver.process(soft)
-      for (let i = 0; i < deinterleavedBits.length; i++) {
-        this.viterbi.feedSoft(deinterleavedBits[i])
-      }
+      this.viterbi.feedSoftBlock(deinterleavedBits)
     }
     return this.ts.takeBytes()
   }

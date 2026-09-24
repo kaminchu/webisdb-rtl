@@ -24,19 +24,13 @@ import type { ReceptionQuality } from '../models/reception'
 import type { TmccInfo } from '../models/tmcc'
 import { u8ToComplex } from './carrier'
 import type { ComplexPlane } from './stages/carrierDemod'
-import {
-  ChannelEstimator,
-  equalize,
-  pilotReferenceAt,
-  type ComplexBins,
-} from './stages/channelEstimation'
-import { DcRemoval } from './stages/dcRemoval'
-import { TsFftBackend } from './stages/fft'
-import { NcoCorrector } from './stages/frequencyCorrection'
-import { OfdmSynchronizer } from './stages/ofdmSync'
-import { FractionalResampler } from './stages/resample'
+import { pilotReferenceAt, type ComplexBins } from './stages/channelEstimation'
 import { TmccDecoder } from './stages/tmcc'
 import { OneSegDecoder } from './oneSegDecoder'
+import { WasmFftBackend } from './wasm/fft'
+import { WasmChannelEstimator, equalizeWasm } from './wasm/demap'
+import { WasmOfdmSynchronizer } from './wasm/ofdm'
+import { WasmDcRemoval, WasmFractionalResampler, WasmNcoCorrector } from './wasm/resample'
 
 export type PipelineState = 'idle' | 'acquiring' | 'locked' | 'error'
 
@@ -220,9 +214,9 @@ function selectCarriers(src: ComplexBins, indices: readonly number[]): ComplexPl
 export class OneSegPipeline {
   private readonly callbacks: OneSegPipelineCallbacks
   private readonly options: Required<OneSegPipelineOptions>
-  private readonly dc = new DcRemoval(0.001)
-  private resampler: FractionalResampler
-  private readonly fft = new TsFftBackend()
+  private readonly dc = new WasmDcRemoval(0.001)
+  private resampler: WasmFractionalResampler
+  private readonly fft = new WasmFftBackend()
 
   private state: PipelineState = 'idle'
   private bufRe = new Float32Array(1 << 20)
@@ -242,9 +236,9 @@ export class OneSegPipeline {
   private integerCarrierOffset = 0
   private fractionalOffsetHz: number | null = null
 
-  private nco: NcoCorrector | null = null
-  private sync: OfdmSynchronizer | null = null
-  private channel: ChannelEstimator | null = null
+  private nco: WasmNcoCorrector | null = null
+  private sync: WasmOfdmSynchronizer | null = null
+  private channel: WasmChannelEstimator | null = null
   private tmcc: TmccDecoder | null = null
   private oneSeg: OneSegDecoder | null = null
   private tmccInfo: TmccInfo | null = null
@@ -263,7 +257,7 @@ export class OneSegPipeline {
       sourceSampleRate: options.sourceSampleRate ?? 1_200_000,
       cutoffHz: options.cutoffHz ?? 450_000,
     }
-    this.resampler = new FractionalResampler(
+    this.resampler = new WasmFractionalResampler(
       this.options.sourceSampleRate,
       ONESEG_SAMPLING_HZ,
       this.options.cutoffHz,
@@ -337,6 +331,10 @@ export class OneSegPipeline {
     this.lastAcquireLen = 0
     this.dc.reset()
     this.resampler.reset()
+    this.nco?.dispose()
+    this.sync?.dispose()
+    this.channel?.dispose()
+    this.oneSeg?.dispose()
     this.nco = null
     this.sync = null
     this.channel = null
@@ -364,36 +362,50 @@ export class OneSegPipeline {
     this.emitStats()
   }
 
+  /** Release all WASM state; the pipeline must not be used afterwards. */
+  dispose(): void {
+    this.discardBuffer()
+    this.dc.dispose()
+    this.resampler.dispose()
+    this.fft.dispose()
+  }
+
   private tryAcquire(): boolean {
     for (const [mode, gi] of CANDIDATES) {
       const n = MODE_PARAMS[mode].oneSegFftSize
-      const sync = new OfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ)
-      const res = sync.process(
-        this.bufRe.subarray(0, this.bufLen),
-        this.bufIm.subarray(0, this.bufLen),
-      )
-      if (res.symbolStarts.length < 260) continue
-      this.lastGammaMag = res.gammaMagnitude
-      this.lastPhi = res.phi
+      const sync = new WasmOfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ)
+      try {
+        const res = sync.process(
+          this.bufRe.subarray(0, this.bufLen),
+          this.bufIm.subarray(0, this.bufLen),
+        )
+        if (res.symbolStarts.length < 260) continue
+        this.lastGammaMag = res.gammaMagnitude
+        this.lastPhi = res.phi
 
-      const cRe = this.bufRe.slice(0, this.bufLen)
-      const cIm = this.bufIm.slice(0, this.bufLen)
-      const fFrac = res.fractionalOffsetHz ?? 0
-      new NcoCorrector(fFrac, ONESEG_SAMPLING_HZ).process(cRe, cIm)
+        const cRe = this.bufRe.slice(0, this.bufLen)
+        const cIm = this.bufIm.slice(0, this.bufLen)
+        const fFrac = res.fractionalOffsetHz ?? 0
+        const nco = new WasmNcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
+        nco.process(cRe, cIm)
+        nco.dispose()
 
-      const planes = this.extractFullPlanes(cRe, cIm, res.symbolStarts, n)
-      if (planes.length < 260) continue
+        const planes = this.extractFullPlanes(cRe, cIm, res.symbolStarts, n)
+        if (planes.length < 260) continue
 
-      const candidates = estimateIntegerCfo(planes, mode)
-      for (const { m, score } of candidates) {
-        if (score < 0.5) continue
-        const result = this.runTmcc(mode, gi, planes, m)
-        if (result !== null) {
-          const spOffset = estimateSpPhase(planes, mode, m)
-          this.applyLock(mode, gi, m, fFrac, n, spOffset, result.info, result.frameStart)
-          this.processLocked()
-          return true
+        const candidates = estimateIntegerCfo(planes, mode)
+        for (const { m, score } of candidates) {
+          if (score < 0.5) continue
+          const result = this.runTmcc(mode, gi, planes, m)
+          if (result !== null) {
+            const spOffset = estimateSpPhase(planes, mode, m)
+            this.applyLock(mode, gi, m, fFrac, n, spOffset, result.info, result.frameStart)
+            this.processLocked()
+            return true
+          }
         }
+      } finally {
+        sync.dispose()
       }
     }
     if (this.bufLen > ACQUIRE_MIN_SAMPLES) {
@@ -491,9 +503,9 @@ export class OneSegPipeline {
     this.spOffset = spOffset
     this.frameStartSymbol = frameStart
     this.fractionalOffsetHz = fFrac
-    this.nco = new NcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
-    this.sync = new OfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ, true)
-    this.channel = new ChannelEstimator(mode, 1)
+    this.nco = new WasmNcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
+    this.sync = new WasmOfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ, true)
+    this.channel = new WasmChannelEstimator(mode, 1)
     this.tmcc = new TmccDecoder(mode, gi)
     this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
     this.tmccInfo = info
@@ -573,7 +585,7 @@ export class OneSegPipeline {
     if (this.oneSeg !== null && this.symbolIndex >= this.frameStartSymbol) {
       const spPhase = (this.symbolIndex + this.spOffset) % 4
       const h = this.channel!.estimate(carriers, spPhase)
-      const z = equalize(carriers, h)
+      const z = equalizeWasm(carriers, h)
       this.updateMer(z, mode, spPhase)
       const plane = selectCarriers(z, dataCarriersFor(mode, spPhase))
       this.pendingPlanes.push(plane)

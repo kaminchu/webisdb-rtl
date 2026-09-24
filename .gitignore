@@ -6,6 +6,9 @@ dist
 dist-ssr
 coverage
 
+# Rust/WASM build artifacts
+wasm/target
+
 # Logs
 logs
 *.log

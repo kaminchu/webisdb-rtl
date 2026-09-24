@@ -9,7 +9,7 @@
 import type { IqChunk } from '../iq/IQSource'
 import { IQFileSource } from '../iq/IQFileSource'
 import { OneSegPipeline, type OneSegPipelineStats } from '../dsp/pipeline'
-import { TsFftBackend } from '../dsp/stages/fft'
+import { WasmFftBackend } from '../dsp/wasm/fft'
 import { powerSpectrumDb } from '../dsp/stages/spectrum'
 import { emptyBufferMetrics, emptyReceptionQuality, emptyThroughput } from '../models/reception'
 import type { ReceiverStats } from '../models'
@@ -56,7 +56,7 @@ let uptimeStart = performance.now()
 const inputRate = new RateMeter()
 const tsRate = new RateMeter()
 const dspMs = new RateMeter()
-const fft = new TsFftBackend()
+const fft = new WasmFftBackend()
 let lastStats: OneSegPipelineStats | null = null
 
 function post(event: ReceiverEvent, transfer?: Transferable[]): void {
@@ -158,7 +158,7 @@ function ensurePipeline(options?: { sampleRate?: number }): OneSegPipeline {
 function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
   const { options } = command
   void fileSource?.stop()
-  pipeline?.reset()
+  pipeline?.dispose()
   pipeline = null
   fileSource = null
   spectrumEnabled = options.spectrumEnabled ?? false
@@ -224,7 +224,7 @@ const handlers: {
   },
   setSampleRate: (command) => {
     if (pipeline) {
-      pipeline.reset()
+      pipeline.dispose()
       pipeline = null
     }
     ensurePipeline({ sampleRate: command.sampleRate })
@@ -241,7 +241,7 @@ const handlers: {
   close: () => {
     void fileSource?.stop()
     fileSource = null
-    pipeline?.reset()
+    pipeline?.dispose()
     pipeline = null
   },
   discardBuffer: () => {

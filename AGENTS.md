@@ -8,6 +8,7 @@ See `plans/要件定義.md` (requirements) and `plans/実装計画.md` (implemen
 ```bash
 npm run dev          # Vite dev server
 npm run build        # tsc -b && vite build
+npm run build:wasm   # rebuild Rust DSP kernels -> src/dsp/wasm/*.bytes.ts (needs wasm32 target)
 npm run typecheck    # tsc -b --force
 npm test             # vitest run
 npm run lint         # oxlint
@@ -18,6 +19,12 @@ npm run ci           # lint + format:check + typecheck + test + knip
 ```
 
 Always run `npm run format` before finishing a task, then `npm run typecheck` and `npm test`.
+
+DSP hot paths run as WebAssembly kernels (`wasm/<name>/` Rust crates). Build with
+`rustup target add wasm32-unknown-unknown` once, then `npm run build:wasm`. The compiled
+`.wasm` is embedded as base64 in the committed `src/dsp/wasm/<name>.bytes.ts`, so `build`
+and `test` do not need Rust. TypeScript reference implementations remain under
+`src/dsp/stages/` and are compared against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
 
 ## Code conventions
 
