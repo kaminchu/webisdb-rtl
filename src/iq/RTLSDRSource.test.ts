@@ -22,7 +22,7 @@ describe('RTLSDRSource', () => {
 
     await source.open()
     expect(source.state).toBe('open')
-    expect(source.descriptor.label).toBe('Generic RTL2832U')
+    expect(source.descriptor.label).toBe('Generic RTL2832U / FC0013')
 
     transport.pushBulk(Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]))
     transport.pushBulk(Uint8Array.from([10, 11, 12, 13]))

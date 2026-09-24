@@ -81,7 +81,7 @@ export class RTLSDRSource implements IQSource {
     this.setState('opening')
     try {
       this.profile = await identifyDevice(this.transport)
-      this.label = this.options.label ?? this.profile.model
+      this.label = this.options.label ?? `${this.profile.model} / ${this.profile.tuner}`
       this.rtl = new Rtl2832u(this.transport)
       this.tuner = createTuner(this.profile.tuner)
 
@@ -95,11 +95,12 @@ export class RTLSDRSource implements IQSource {
       this.setState('open')
     } catch (error) {
       this.fail(error)
+      throw error
     }
   }
 
   async close(): Promise<void> {
-    await this.stop()
+    this.running = false
     this.unsubscribeDisconnect?.()
     this.unsubscribeDisconnect = null
     if (this.rtl) {
@@ -109,6 +110,9 @@ export class RTLSDRSource implements IQSource {
         // device may already be gone
       }
     }
+    const task = this.readTask
+    this.readTask = null
+    if (task) await task.catch(() => undefined)
     this.rtl = null
     this.tuner = null
     this.profile = null

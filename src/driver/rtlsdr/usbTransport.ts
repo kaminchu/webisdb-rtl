@@ -88,6 +88,7 @@ function toBytes(result: UsbInTransferResult): Uint8Array {
 
 export class WebUsbTransport implements UsbTransport {
   private readonly device: WebUsbDevice
+  private readonly claimedInterfaces = new Set<number>()
 
   constructor(device: WebUsbDevice) {
     this.device = device
@@ -111,14 +112,18 @@ export class WebUsbTransport implements UsbTransport {
   }
 
   async close(): Promise<void> {
+    this.claimedInterfaces.clear()
     if (this.device.opened) await this.device.close()
   }
 
   async claimInterface(interfaceNumber: number): Promise<void> {
+    if (this.claimedInterfaces.has(interfaceNumber)) return
     await this.device.claimInterface(interfaceNumber)
+    this.claimedInterfaces.add(interfaceNumber)
   }
 
   async releaseInterface(interfaceNumber: number): Promise<void> {
+    if (!this.claimedInterfaces.delete(interfaceNumber)) return
     await this.device.releaseInterface(interfaceNumber)
   }
 

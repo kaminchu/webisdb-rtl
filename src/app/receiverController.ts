@@ -7,7 +7,6 @@ import type { IqMetadata } from '../iq/iqFormat'
 import type { IQSource } from '../iq/IQSource'
 import { RTLSDRSource } from '../iq/RTLSDRSource'
 import { requestRtlSdrDevice } from '../driver/rtlsdr/usbTransport'
-import { identifyDevice } from '../driver/rtlsdr/deviceProfile'
 import type { OneSegPlayer } from '../media/player'
 import type {
   IqChunkInit,
@@ -84,15 +83,20 @@ export class ReceiverController {
 
   async connectRtlSdr(): Promise<void> {
     const settings = loadSettings()
+    await this.#detachSource()
     const transport = await requestRtlSdrDevice()
-    const profile = await identifyDevice(transport)
     const source = new RTLSDRSource(transport, {
       sampleRate: settings.sampleRate ?? DEFAULT_SAMPLE_RATE,
       centerFrequency: settings.lastFrequency ?? channelToFrequencyHz(settings.lastChannel ?? 19),
       gainDb: settings.gainDb ?? DEFAULT_GAIN,
-      label: `${profile.model} / ${profile.tuner}`,
     })
-    await source.open()
+    try {
+      await source.open()
+    } catch (error) {
+      await source.close().catch(() => undefined)
+      await transport.close().catch(() => undefined)
+      throw error
+    }
     this.#attachSource(source)
     await source.start()
     this.#started = true
@@ -127,7 +131,7 @@ export class ReceiverController {
     metadata: IqMetadata,
     label?: string,
   ): Promise<void> {
-    this.#detachSource()
+    await this.#detachSource()
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
     const buffer = bytes.slice().buffer as ArrayBuffer
     store.setState((prev) => ({
@@ -161,7 +165,6 @@ export class ReceiverController {
   }
 
   #attachSource(source: IQSource): void {
-    this.#detachSource()
     this.#source = source
     this.#unsubscribeSamples = source.onSamples((chunk) => {
       if (chunk.endOfStream) return
@@ -182,16 +185,14 @@ export class ReceiverController {
     })
   }
 
-  #detachSource(): void {
+  async #detachSource(): Promise<void> {
     this.#unsubscribeSamples?.()
     this.#unsubscribeState?.()
     this.#unsubscribeSamples = null
     this.#unsubscribeState = null
-    if (this.#source) {
-      void this.#source.stop().catch(() => undefined)
-      void this.#source.close().catch(() => undefined)
-      this.#source = null
-    }
+    const source = this.#source
+    this.#source = null
+    if (source) await source.close().catch(() => undefined)
   }
 
   // --- controls ------------------------------------------------------------
@@ -296,7 +297,7 @@ export class ReceiverController {
   }
 
   dispose(): void {
-    this.#detachSource()
+    void this.#detachSource()
     this.#receiverWorker?.terminate()
     this.#tsWorker?.terminate()
     this.#receiverWorker = null
