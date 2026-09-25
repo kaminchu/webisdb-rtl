@@ -5,6 +5,7 @@
 import { channelToFrequencyHz, frequencyToChannel } from '../models/channel'
 import type { IQSource } from '../iq/IQSource'
 import { RTLSDRSource } from '../iq/RTLSDRSource'
+import { ISDBT_RTL_SAMPLE_RATE, RtlFrontendMode } from '../driver/rtlsdr/rtl2832u'
 import { findAuthorizedRtlSdrDevice, requestRtlSdrDevice } from '../driver/rtlsdr/usbTransport'
 import type { UsbTransport, WebUsbTransport } from '../driver/rtlsdr/usbTransport'
 import type { OneSegPlayer, PlayerStats } from '../media/player'
@@ -22,6 +23,13 @@ import { receivedServices } from './serviceInfo'
 
 const DEFAULT_SAMPLE_RATE = 1_200_000
 const DEFAULT_GAIN = 19.7
+
+/** RTL-SDR hardware rate implied by the selected front-end mode. */
+function desiredSampleRate(settings = loadSettings()): number {
+  return settings.frontend === RtlFrontendMode.RealtekIsdbt
+    ? ISDBT_RTL_SAMPLE_RATE
+    : (settings.sampleRate ?? DEFAULT_SAMPLE_RATE)
+}
 
 export interface ReceiverControllerOptions {
   player?: OneSegPlayer | null
@@ -112,7 +120,7 @@ export class ReceiverController {
     const configured = store.getState().configuredChannels
     const fallbackChannel = settings.lastChannel ?? configured[0]?.physicalChannel ?? 19
     const source = new RTLSDRSource(usbTransport, {
-      sampleRate: settings.sampleRate ?? DEFAULT_SAMPLE_RATE,
+      sampleRate: desiredSampleRate(settings),
       centerFrequency: settings.lastFrequency ?? channelToFrequencyHz(fallbackChannel),
       gainDb: settings.gainDb ?? DEFAULT_GAIN,
     })
@@ -313,6 +321,56 @@ export class ReceiverController {
     store.setState((prev) => ({
       receiver: { ...prev.receiver, gainDb: typeof gainDb === 'number' ? gainDb : null },
     }))
+  }
+
+  /**
+   * Switch the DSP front-end strategy (generic resampler vs Realtek ISDB-T
+   * 2:1 decimation) and reconfigure the live source so it takes effect without
+   * a manual reconnect.
+   */
+  async setFrontend(mode: RtlFrontendMode): Promise<void> {
+    saveSettings({ frontend: mode })
+    await this.#reconfigureFrontend()
+  }
+
+  /** Change the generic-mode sample rate and reconfigure the live source. */
+  async setSampleRate(hz: number): Promise<void> {
+    saveSettings({ sampleRate: hz })
+    if (loadSettings().frontend === RtlFrontendMode.Generic) await this.#reconfigureFrontend()
+  }
+
+  async #reconfigureFrontend(): Promise<void> {
+    const source = this.#source
+    if (!source || source.kind !== 'rtlsdr') return
+    const restart = source.state === 'running'
+    const rate = desiredSampleRate()
+    try {
+      await source.stop()
+      if (rate !== source.descriptor.sampleRate) await source.setSampleRate(rate)
+      this.#resetWorkers()
+      store.setState((prev) => ({
+        receiver: { ...prev.receiver, sampleRate: source.descriptor.sampleRate },
+        diagnostics: createEmptyDiagnostics(),
+      }))
+      this.#postTs({ type: 'reset' })
+      const receiver = store.getState().receiver
+      this.#postReceiver({
+        type: 'init',
+        options: {
+          source: { kind: 'rtlsdr', deviceLabel: source.descriptor.label },
+          frequency: source.descriptor.centerFrequency,
+          sampleRate: source.descriptor.sampleRate,
+          gainDb: receiver.gainDb ?? 'auto',
+          ppm: receiver.ppm,
+          spectrumEnabled: false,
+        },
+      })
+      if (restart) await source.start()
+      this.#player?.reset()
+      this.#started = source.state === 'running'
+    } catch (error) {
+      this.#fail(error)
+    }
   }
 
   get running(): boolean {

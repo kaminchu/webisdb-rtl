@@ -280,6 +280,26 @@ describe('OneSegPipeline synthetic', () => {
     expect(states.length).toBeGreaterThan(0)
   })
 
+  it('fuses U8 unpack, DC removal and 2:1 decimation at the 128/63 rate', () => {
+    const stats: OneSegPipelineStats[] = []
+    const rate = ONESEG_SAMPLING_HZ * 2
+    const pipe = new OneSegPipeline(
+      { onStats: (value) => stats.push(value) },
+      { sourceSampleRate: rate },
+    )
+    pipe.pushIq({
+      data: new Uint8Array(16384).fill(128),
+      format: 'u8',
+      sampleRate: rate,
+      centerFrequency: 509_142_857,
+      sequence: 0,
+      timestamp: 0,
+    })
+    expect(stats).toHaveLength(1)
+    expect(stats[0].bufferedSamples).toBe(4096)
+    pipe.dispose()
+  })
+
   it('resets and discards buffers cleanly', () => {
     const pipe = new OneSegPipeline({}, { sourceSampleRate: ONESEG_SAMPLING_HZ })
     pipe.pushIq({

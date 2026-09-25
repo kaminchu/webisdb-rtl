@@ -23,6 +23,23 @@ export const RTL_XTAL_HZ = 28800000
 export const RTL_MIN_SAMPLE_RATE = 225001
 export const RTL_MAX_SAMPLE_RATE = 3200000
 
+/**
+ * Realtek ISDB-T baseband rate (128/63 MSps). The DSP decimates it 2:1 to the
+ * one-seg 64/63 MSps instead of running a fractional resampler; this is the
+ * ratio the original `RTKISDBT.dll` configures (register 0x9f = 0x038b3330).
+ */
+export const ISDBT_RTL_SAMPLE_RATE = 128_000_000 / 63
+
+/** DSP front-end strategy selected by the user. */
+export const RtlFrontendMode = {
+  /** Generic RTL-SDR: arbitrary sample rate plus a fractional resampler. */
+  Generic: 'generic-rtl-sdr',
+  /** Realtek ISDB-T: 128/63 MSps plus a fused 2:1 decimator. */
+  RealtekIsdbt: 'realtek-isdbt',
+} as const
+
+export type RtlFrontendMode = (typeof RtlFrontendMode)[keyof typeof RtlFrontendMode]
+
 /** Default FIR filter uploaded by `rtlsdr_set_fir`. */
 export const RTL_FIR_COEFFICIENTS = Uint8Array.from([
   0xca, 0xdc, 0xd7, 0xd8, 0xe0, 0xf2, 0x0e, 0x35, 0x06, 0x50, 0x9c, 0x0d, 0x71, 0x11, 0x14, 0x71,

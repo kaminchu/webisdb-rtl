@@ -43,6 +43,52 @@ export interface ResampledBlock {
   im: Float32Array
 }
 
+/**
+ * Fused U8 IQ unpack, DC removal and integer decimation reference.
+ *
+ * Keeps every `factor`-th complex sample, normalises it with the same
+ * `(x - 127.5) / 127.5` mapping as the front end and removes the running-mean DC
+ * offset. Mirrors the `U8Decimator` WASM kernel.
+ */
+export class U8Decimator {
+  private readonly factor: number
+  private readonly alpha: number
+  private phase = 0
+  private dcRe = 0
+  private dcIm = 0
+
+  constructor(factor: number, alpha = 0.001) {
+    this.factor = Math.max(1, Math.floor(factor))
+    this.alpha = alpha
+  }
+
+  reset(): void {
+    this.phase = 0
+    this.dcRe = 0
+    this.dcIm = 0
+  }
+
+  process(data: Uint8Array | ArrayLike<number>): ResampledBlock {
+    const samples = Math.floor(data.length / 2)
+    const re: number[] = []
+    const im: number[] = []
+    const alpha = this.alpha
+    for (let s = 0; s < samples; s++) {
+      if (this.phase === 0) {
+        const r = (Number(data[2 * s]) - 127.5) / 127.5
+        const q = (Number(data[2 * s + 1]) - 127.5) / 127.5
+        this.dcRe += alpha * (r - this.dcRe)
+        this.dcIm += alpha * (q - this.dcIm)
+        re.push(r - this.dcRe)
+        im.push(q - this.dcIm)
+      }
+      this.phase += 1
+      if (this.phase >= this.factor) this.phase = 0
+    }
+    return { re: Float32Array.from(re), im: Float32Array.from(im) }
+  }
+}
+
 export class FractionalResampler {
   private readonly stepInt: number
   private readonly stepFrac: number

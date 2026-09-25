@@ -333,6 +333,122 @@ pub extern "C" fn resample_out_im(ptr: *const FractionalResampler) -> *const f32
     unsafe { (*ptr).out_im.as_ptr() }
 }
 
+/// Fused U8 IQ unpack, DC removal and integer decimation.
+///
+/// Reads interleaved unsigned-8 IQ, keeps every `factor`-th complex sample,
+/// normalises it to +/-1, removes the running-mean DC offset and returns the
+/// decimated complex stream. This is the 128/63 -> 64/63 MSps path for the
+/// RTL2832U ISDB-T front end: the discarded samples never leave WASM.
+pub struct U8Decimator {
+    factor: i32,
+    phase: i32,
+    alpha: f64,
+    dc_re: f64,
+    dc_im: f64,
+    out_re: Vec<f32>,
+    out_im: Vec<f32>,
+}
+
+impl U8Decimator {
+    fn new(factor: i32, alpha: f64) -> Self {
+        Self {
+            factor: factor.max(1),
+            phase: 0,
+            alpha,
+            dc_re: 0.0,
+            dc_im: 0.0,
+            out_re: Vec::new(),
+            out_im: Vec::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.phase = 0;
+        self.dc_re = 0.0;
+        self.dc_im = 0.0;
+        self.out_re.clear();
+        self.out_im.clear();
+    }
+
+    fn process(&mut self, data: &[u8]) {
+        self.out_re.clear();
+        self.out_im.clear();
+        let factor = self.factor;
+        let alpha = self.alpha;
+        let mut phase = self.phase;
+        let mut dc_re = self.dc_re;
+        let mut dc_im = self.dc_im;
+        let samples = data.len() / 2;
+        for s in 0..samples {
+            if phase == 0 {
+                let re = (data[2 * s] as f64 - 127.5) / 127.5;
+                let im = (data[2 * s + 1] as f64 - 127.5) / 127.5;
+                dc_re += alpha * (re - dc_re);
+                dc_im += alpha * (im - dc_im);
+                self.out_re.push((re - dc_re) as f32);
+                self.out_im.push((im - dc_im) as f32);
+            }
+            phase += 1;
+            if phase >= factor {
+                phase = 0;
+            }
+        }
+        self.phase = phase;
+        self.dc_re = dc_re;
+        self.dc_im = dc_im;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_create(factor: i32, alpha: f64) -> *mut U8Decimator {
+    Box::into_raw(Box::new(U8Decimator::new(factor, alpha)))
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_destroy(ptr: *mut U8Decimator) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_reset(ptr: *mut U8Decimator) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe { (*ptr).reset() };
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_process(ptr: *mut U8Decimator, data_ptr: *const u8, n: usize) -> usize {
+    if ptr.is_null() || n == 0 {
+        return 0;
+    }
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, n) };
+    let dec = unsafe { &mut *ptr };
+    dec.process(data);
+    dec.out_re.len()
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_out_re(ptr: *const U8Decimator) -> *const f32 {
+    if ptr.is_null() {
+        return core::ptr::null();
+    }
+    unsafe { (*ptr).out_re.as_ptr() }
+}
+
+#[no_mangle]
+pub extern "C" fn u8_decim_out_im(ptr: *const U8Decimator) -> *const f32 {
+    if ptr.is_null() {
+        return core::ptr::null();
+    }
+    unsafe { (*ptr).out_im.as_ptr() }
+}
+
 /// Numerically controlled oscillator frequency-offset correction.
 pub struct NcoCorrector {
     offset_hz: f64,

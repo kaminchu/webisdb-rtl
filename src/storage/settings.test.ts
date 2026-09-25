@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { RtlFrontendMode } from '../driver/rtlsdr/rtl2832u'
 import {
   DEFAULT_BUFFER_SECONDS,
   MAX_BUFFER_SECONDS,
@@ -63,6 +64,14 @@ describe('settings', () => {
     expect(loadSettings().bufferSeconds).toBe(DEFAULT_BUFFER_SECONDS)
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ bufferSeconds: 'x' }))
     expect(loadSettings().bufferSeconds).toBe(DEFAULT_BUFFER_SECONDS)
+  })
+
+  it('persists the DSP front-end mode and rejects unknown values', () => {
+    saveSettings({ frontend: RtlFrontendMode.RealtekIsdbt })
+    expect(loadSettings().frontend).toBe(RtlFrontendMode.RealtekIsdbt)
+
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ frontend: 'bogus' }))
+    expect(loadSettings().frontend).toBe(RtlFrontendMode.Generic)
   })
 
   it('rejects an invalid audio channel', () => {

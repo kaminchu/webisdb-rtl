@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { ONESEG_SAMPLING_HZ } from '../isdbtParams'
 import { DcRemoval } from '../stages/dcRemoval'
 import { NcoCorrector } from '../stages/frequencyCorrection'
-import { FractionalResampler } from '../stages/resample'
-import { WasmDcRemoval, WasmFractionalResampler, WasmNcoCorrector } from './resample'
+import { FractionalResampler, U8Decimator } from '../stages/resample'
+import {
+  WasmDcRemoval,
+  WasmFractionalResampler,
+  WasmNcoCorrector,
+  WasmU8Decimator,
+} from './resample'
 
 const SRC_RATE = 1_200_000
 
@@ -177,6 +182,78 @@ describe('WasmFractionalResampler', () => {
     for (let i = 0; i < t.re.length; i++) {
       expect(w.re[i]).toBeCloseTo(t.re[i], 4)
       expect(w.im[i]).toBeCloseTo(t.im[i], 4)
+    }
+  })
+})
+
+function u8Bytes(n: number, seed: number): Uint8Array {
+  const out = new Uint8Array(n * 2)
+  let s = seed
+  for (let i = 0; i < out.length; i++) {
+    s = (s * 1103515245 + 12345) & 0x7fffffff
+    out[i] = s & 0xff
+  }
+  return out
+}
+
+describe('WasmU8Decimator', () => {
+  it.each([1, 2])('matches U8Decimator across uneven chunks (factor %i)', (factor) => {
+    const n = 9000
+    const raw = u8Bytes(n, 17)
+    const wasm = new WasmU8Decimator(factor, 0.001)
+    const ts = new U8Decimator(factor, 0.001)
+    const wRe: Float32Array[] = []
+    const wIm: Float32Array[] = []
+    const tRe: Float32Array[] = []
+    const tIm: Float32Array[] = []
+    try {
+      for (const [a, b] of chunks(n, [701, 33, 1500, 8, 999])) {
+        const w = wasm.process(raw.subarray(a * 2, b * 2))
+        const t = ts.process(raw.subarray(a * 2, b * 2))
+        wRe.push(w.re)
+        wIm.push(w.im)
+        tRe.push(t.re)
+        tIm.push(t.im)
+      }
+      const wr = concat(wRe)
+      const wi = concat(wIm)
+      const tr = concat(tRe)
+      const ti = concat(tIm)
+      expect(wr.length).toBe(tr.length)
+      for (let i = 0; i < tr.length; i++) {
+        expect(wr[i]).toBeCloseTo(tr[i], 5)
+        expect(wi[i]).toBeCloseTo(ti[i], 5)
+      }
+    } finally {
+      wasm.dispose()
+    }
+  })
+
+  it('is chunk-size invariant and reset restarts state', () => {
+    const n = 4000
+    const raw = u8Bytes(n, 5)
+    const a = new WasmU8Decimator(2, 0.01)
+    const b = new WasmU8Decimator(2, 0.01)
+    const aRe: Float32Array[] = []
+    const bRe: Float32Array[] = []
+    try {
+      for (const [lo, hi] of chunks(n, [701, 33, 1500, 8]))
+        aRe.push(a.process(raw.subarray(lo * 2, hi * 2)).re)
+      for (const [lo, hi] of chunks(n, [2048, 1, 1024, 927]))
+        bRe.push(b.process(raw.subarray(lo * 2, hi * 2)).re)
+      const ar = concat(aRe)
+      const br = concat(bRe)
+      expect(ar.length).toBe(br.length)
+      for (let i = 0; i < ar.length; i++) expect(ar[i]).toBe(br[i])
+
+      a.reset()
+      const once = a.process(raw.subarray(0, 2000))
+      a.reset()
+      const twice = a.process(raw.subarray(0, 2000))
+      expect(Array.from(once.re)).toEqual(Array.from(twice.re))
+    } finally {
+      a.dispose()
+      b.dispose()
     }
   })
 })

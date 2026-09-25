@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { MockUsbTransport, type RecordedTransfer } from './usbTransport'
-import { Rtl2832u, RTL_FIR_COEFFICIENTS, isValidSampleRate } from './rtl2832u'
+import {
+  Rtl2832u,
+  RTL_FIR_COEFFICIENTS,
+  ISDBT_RTL_SAMPLE_RATE,
+  isValidSampleRate,
+} from './rtl2832u'
 
 interface DemodWrite {
   page: number
@@ -76,6 +81,20 @@ describe('Rtl2832u.setSampleRate', () => {
     expect(at(0x3e)?.data).toEqual(Uint8Array.of(0x00))
     expect(writes.at(-2)?.data).toEqual(Uint8Array.of(0x14))
     expect(writes.at(-1)?.data).toEqual(Uint8Array.of(0x10))
+  })
+
+  it('matches the Realtek ISDB-T ratio (0x038b3330) for 128/63 MSps', async () => {
+    const mock = new MockUsbTransport()
+    await new Rtl2832u(mock).setSampleRate(ISDBT_RTL_SAMPLE_RATE)
+
+    const writes = demodWrites(mock)
+    const at = (addr: number) => writes.find((w) => w.page === 1 && w.addr === addr)
+    expect(at(0x9f)?.data).toEqual(Uint8Array.of(0x03, 0x8b))
+    expect(at(0xa1)?.data).toEqual(Uint8Array.of(0x33, 0x30))
+  })
+
+  it('accepts the Realtek ISDB-T rate', () => {
+    expect(isValidSampleRate(ISDBT_RTL_SAMPLE_RATE)).toBe(true)
   })
 
   it('rejects sample rates outside the supported ranges', () => {

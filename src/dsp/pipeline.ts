@@ -29,7 +29,12 @@ import { segPilotReference } from './wasm/demap'
 import { WasmFrontend } from './wasm/frontend'
 import { WasmOfdmSynchronizer } from './wasm/ofdm'
 import { WasmTmccDecoder } from './wasm/tmcc'
-import { WasmDcRemoval, WasmFractionalResampler, WasmNcoCorrector } from './wasm/resample'
+import {
+  WasmDcRemoval,
+  WasmFractionalResampler,
+  WasmNcoCorrector,
+  WasmU8Decimator,
+} from './wasm/resample'
 
 export type PipelineState = 'idle' | 'acquiring' | 'locked' | 'error'
 
@@ -252,6 +257,7 @@ export class OneSegPipeline {
   private readonly lockStallMs: number
   private readonly clock: () => number
   private readonly dc = new WasmDcRemoval(0.001)
+  private readonly decimator: WasmU8Decimator | null
   private resampler: WasmFractionalResampler
   private readonly fft = new WasmFftBackend()
 
@@ -301,10 +307,28 @@ export class OneSegPipeline {
       ONESEG_SAMPLING_HZ,
       this.options.cutoffHz,
     )
+    // A source rate that is exactly 1x or 2x the one-seg rate lets the fused U8
+    // unpack/DC/decimation kernel replace the polyphase resampler. The RTL2832U
+    // ISDB-T front end uses the 2x (128/63 MSps) case.
+    const ratio = this.options.sourceSampleRate / ONESEG_SAMPLING_HZ
+    const factor = Math.round(ratio)
+    this.decimator =
+      (factor === 1 || factor === 2) && Math.abs(ratio - factor) < 1e-3
+        ? new WasmU8Decimator(factor, 0.001)
+        : null
   }
 
   /** Feed one raw IQ chunk (U8/I8 interleaved, or F32 complex interleaved). */
   pushIq(chunk: IqChunk): void {
+    if (this.decimator !== null && chunk.format === 'u8') {
+      const data = chunk.data
+      const u8 = data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>)
+      const rs = this.decimator.process(u8)
+      this.consume(rs.re, rs.im)
+      this.emitStats()
+      return
+    }
+
     const count = Math.floor(chunk.data.length / 2)
     if (count > this.inRe.length) {
       this.inRe = new Float32Array(count)
@@ -334,22 +358,25 @@ export class OneSegPipeline {
 
     this.dc.process(re, im)
     const rs = this.resampler.process(re, im)
-
-    if (this.state === 'locked') {
-      this.processLocked(rs.re, rs.im)
-      this.checkLockLoss()
-    } else {
-      this.append(rs.re, rs.im)
-      if (this.state === 'idle') this.setState('acquiring')
-      if (
-        this.bufLen >= ACQUIRE_MIN_SAMPLES &&
-        this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
-      ) {
-        this.lastAcquireLen = this.bufLen
-        this.tryAcquire()
-      }
-    }
+    this.consume(rs.re, rs.im)
     this.emitStats()
+  }
+
+  private consume(re: Float32Array, im: Float32Array): void {
+    if (this.state === 'locked') {
+      this.processLocked(re, im)
+      this.checkLockLoss()
+      return
+    }
+    this.append(re, im)
+    if (this.state === 'idle') this.setState('acquiring')
+    if (
+      this.bufLen >= ACQUIRE_MIN_SAMPLES &&
+      this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
+    ) {
+      this.lastAcquireLen = this.bufLen
+      this.tryAcquire()
+    }
   }
 
   /**
@@ -405,6 +432,7 @@ export class OneSegPipeline {
     this.bufLen = 0
     this.lastAcquireLen = 0
     this.dc.reset()
+    this.decimator?.reset()
     this.resampler.reset()
     this.frontend?.dispose()
     this.oneSeg?.dispose()
@@ -436,6 +464,7 @@ export class OneSegPipeline {
   dispose(): void {
     this.discardBuffer()
     this.dc.dispose()
+    this.decimator?.dispose()
     this.resampler.dispose()
     this.fft.dispose()
   }

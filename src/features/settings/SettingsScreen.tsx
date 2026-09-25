@@ -3,6 +3,7 @@ import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import { Button } from '../../components/Button'
 import { Panel } from '../../components/Panel'
+import { RtlFrontendMode } from '../../driver/rtlsdr/rtl2832u'
 import { loadSettings, MAX_BUFFER_SECONDS, saveSettings } from '../../storage/settings'
 import { MenuButton } from '../shell/MenuButton'
 import { ChannelSettings } from './ChannelSettings'
@@ -15,6 +16,11 @@ const SAMPLE_RATES = [
   { value: 2_400_000, label: '2.4 MSps' },
 ] as const
 
+const FRONTENDS = [
+  { value: RtlFrontendMode.Generic, label: '汎用 RTL-SDR（分数リサンプラ）' },
+  { value: RtlFrontendMode.RealtekIsdbt, label: 'Realtek ISDB-T（128/63 + 2:1 間引き）' },
+] as const
+
 export function SettingsScreen() {
   const gainDb = useStore((s) => s.receiver.gainDb)
   const sampleRate = useStore((s) => s.receiver.sampleRate)
@@ -22,6 +28,7 @@ export function SettingsScreen() {
   const [agc, setAgc] = useState(() => loadSettings().gainDb === null)
   const [gainInput, setGainInput] = useState(() => String(loadSettings().gainDb ?? 19.7))
   const [rate, setRate] = useState(() => loadSettings().sampleRate ?? sampleRate)
+  const [frontend, setFrontend] = useState(() => loadSettings().frontend)
   const [bufferInput, setBufferInput] = useState(() => String(loadSettings().bufferSeconds))
 
   const applyGain = () => {
@@ -38,7 +45,12 @@ export function SettingsScreen() {
 
   const changeRate = (value: number) => {
     setRate(value)
-    saveSettings({ sampleRate: value })
+    void receiverController.setSampleRate(value)
+  }
+
+  const changeFrontend = (value: RtlFrontendMode) => {
+    setFrontend(value)
+    void receiverController.setFrontend(value)
   }
 
   const changeBuffer = (raw: string) => {
@@ -107,11 +119,33 @@ export function SettingsScreen() {
             </div>
 
             <div className={styles.field}>
+              <label htmlFor="frontend">DSPフロントエンド</label>
+              <select
+                id="frontend"
+                className={styles.select}
+                value={frontend}
+                onChange={(event) => changeFrontend(event.target.value as RtlFrontendMode)}
+              >
+                {FRONTENDS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className={styles.hint}>
+                {frontend === RtlFrontendMode.RealtekIsdbt
+                  ? 'サンプルレートは 128/63 MSps 固定。変更すると受信を再開します。'
+                  : '任意のサンプルレートを分数リサンプラで変換。変更すると受信を再開します。'}
+              </span>
+            </div>
+
+            <div className={styles.field}>
               <label htmlFor="sample-rate">サンプルレート</label>
               <select
                 id="sample-rate"
                 className={styles.select}
                 value={rate}
+                disabled={frontend === RtlFrontendMode.RealtekIsdbt}
                 onChange={(event) => changeRate(Number(event.target.value))}
               >
                 {SAMPLE_RATES.map((option) => (

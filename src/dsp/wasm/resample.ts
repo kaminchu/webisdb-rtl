@@ -93,6 +93,63 @@ export class WasmDcRemoval {
   }
 }
 
+/**
+ * Fused U8 unpack + DC removal + integer decimation.
+ *
+ * Input bytes are staged in WASM and only the kept complex samples are read
+ * back, so the decimated-away samples never cross the host boundary.
+ */
+export class WasmU8Decimator {
+  private readonly ptr: number
+  private readonly processFn: (ptr: number, data: number, n: number) => number
+  private readonly resetFn: PtrFn
+  private readonly outReFn: OutPtrFn
+  private readonly outImFn: OutPtrFn
+  private inPtr = 0
+  private inCap = 0
+  private disposed = false
+
+  constructor(factor: number, alpha = 0.001) {
+    this.processFn = wasm.exports.u8_decim_process as (
+      ptr: number,
+      data: number,
+      n: number,
+    ) => number
+    this.resetFn = wasm.exports.u8_decim_reset as PtrFn
+    this.outReFn = wasm.exports.u8_decim_out_re as OutPtrFn
+    this.outImFn = wasm.exports.u8_decim_out_im as OutPtrFn
+    this.ptr = (wasm.exports.u8_decim_create as (f: number, a: number) => number)(factor, alpha)
+  }
+
+  process(data: Uint8Array): { re: Float32Array; im: Float32Array } {
+    if (data.length > this.inCap) {
+      if (this.inPtr !== 0) wasmFree(wasm, this.inPtr, this.inCap)
+      this.inPtr = wasmAlloc(wasm, data.length)
+      this.inCap = data.length
+    }
+    if (data.length > 0) heap.u8(this.inPtr, data.length).set(data)
+    const n = this.processFn(this.ptr, this.inPtr, data.length)
+    if (n === 0) return { re: new Float32Array(0), im: new Float32Array(0) }
+    return {
+      re: heap.f32(this.outReFn(this.ptr), n).slice(),
+      im: heap.f32(this.outImFn(this.ptr), n).slice(),
+    }
+  }
+
+  reset(): void {
+    this.resetFn(this.ptr)
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    if (this.inPtr !== 0) wasmFree(wasm, this.inPtr, this.inCap)
+    this.inPtr = 0
+    this.inCap = 0
+    ;(wasm.exports.u8_decim_destroy as PtrFn)(this.ptr)
+  }
+}
+
 export class WasmFractionalResampler {
   private readonly scratch = new Scratch()
   private readonly ptr: number

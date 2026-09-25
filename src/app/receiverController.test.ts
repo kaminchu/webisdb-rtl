@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { RtlFrontendMode } from '../driver/rtlsdr/rtl2832u'
+import { loadSettings, resetSettings } from '../storage/settings'
 import { ReceiverController } from './receiverController'
 
 type ConnectStub = { performConnect: () => Promise<void> }
@@ -48,5 +50,18 @@ describe('ReceiverController.connectRtlSdr', () => {
     await expect(first).rejects.toThrow('boom')
     await expect(second).rejects.toThrow('boom')
     expect(calls).toBe(1)
+  })
+})
+
+describe('ReceiverController.setFrontend', () => {
+  it('persists the mode and tolerates no attached source', async () => {
+    resetSettings()
+    try {
+      const controller = new ReceiverController()
+      await controller.setFrontend(RtlFrontendMode.RealtekIsdbt)
+      expect(loadSettings().frontend).toBe(RtlFrontendMode.RealtekIsdbt)
+    } finally {
+      resetSettings()
+    }
   })
 })

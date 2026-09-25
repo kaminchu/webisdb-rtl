@@ -7,6 +7,7 @@
  */
 
 import { AudioChannelMode } from '../models/media'
+import { RtlFrontendMode } from '../driver/rtlsdr/rtl2832u'
 
 export interface AppSettings {
   lastRegionId: string | null
@@ -14,6 +15,8 @@ export interface AppSettings {
   lastFrequency: number | null
   gainDb: number | null
   sampleRate: number | null
+  /** RTL2832U DSP front-end strategy (see `RtlFrontendMode`). */
+  frontend: RtlFrontendMode
   /** Playback jitter buffer depth in seconds; media is presented this far behind live. */
   bufferSeconds: number
   ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
@@ -37,6 +40,7 @@ export function defaultSettings(): AppSettings {
     lastFrequency: null,
     gainDb: null,
     sampleRate: null,
+    frontend: RtlFrontendMode.Generic,
     bufferSeconds: DEFAULT_BUFFER_SECONDS,
     ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
     debug: { showOverlay: false },
@@ -78,6 +82,12 @@ function asTheme(value: unknown): 'dark' | 'light' | undefined {
   return value === 'dark' || value === 'light' ? value : undefined
 }
 
+function asFrontend(value: unknown, fallback: RtlFrontendMode): RtlFrontendMode {
+  return value === RtlFrontendMode.RealtekIsdbt || value === RtlFrontendMode.Generic
+    ? value
+    : fallback
+}
+
 function asAudioChannel(value: unknown): AudioChannelMode | undefined {
   return value === AudioChannelMode.Stereo ||
     value === AudioChannelMode.Main ||
@@ -110,6 +120,7 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
     lastFrequency: asNumberOrNull(patch.lastFrequency, base.lastFrequency),
     gainDb: asNumberOrNull(patch.gainDb, base.gainDb),
     sampleRate: asNumberOrNull(patch.sampleRate, base.sampleRate),
+    frontend: asFrontend(patch.frontend, base.frontend),
     bufferSeconds: asBufferSeconds(patch.bufferSeconds, base.bufferSeconds),
     ui: {
       ...base.ui,
