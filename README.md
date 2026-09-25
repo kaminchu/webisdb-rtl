@@ -79,6 +79,28 @@ the browser warning). On the Watch screen, click the stage to select the RTL-SDR
 the WebUSB picker. If no channels are configured yet, the app opens Settings first — pick a
 region and transmitter or run a channel scan, then return to Watch.
 
+### Using RTL-SDR on Linux
+
+On Linux, Chrome can fail to connect with `NetworkError: Unable to claim interface`. The
+kernel DVB driver `dvb_usb_rtl28xxu` binds to the RTL2832U automatically and holds interface
+0, and WebUSB cannot claim an interface owned by a kernel driver.
+
+Unbind it for the current session (with the dongle plugged in):
+
+```bash
+sudo rmmod dvb_usb_rtl28xxu
+```
+
+To disable it permanently, blacklist the module and reboot:
+
+```bash
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl-sdr.conf
+sudo modprobe -r dvb_usb_rtl28xxu
+```
+
+Check with `lsmod | grep rtl28xxu`. Also make sure no other browser tab or application
+(`rtl_tcp`, gqrx, SDR#) has the device open.
+
 ### Using a hosted build
 
 The production build is a static site, published at

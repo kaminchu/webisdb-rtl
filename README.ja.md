@@ -76,6 +76,29 @@ Vite が表示する HTTPS URL を開きます（開発サーバーは自己署�
 RTL-SDR を選びます。チャンネルが未設定の場合は先に設定画面が開くので、地域と送信所を選ぶか
 チャンネルスキャンを実行してから視聴画面に戻ります。
 
+### Linux で受信する場合
+
+Linux の Chrome では、カーネルの DVB ドライバ `dvb_usb_rtl28xxu` が RTL2832U に自動で
+バインドされ、インターフェース 0 を保持することがあります。この状態で接続すると
+`NetworkError: Unable to claim interface` で失敗します。WebUSB はカーネルドライバが保持して
+いるインターフェースを claim できないためです。
+
+一時的に外すには、ドングルを挿したまま次を実行します。
+
+```bash
+sudo rmmod dvb_usb_rtl28xxu
+```
+
+恒久的に無効化するには、ブラックリストを作成して再起動します。
+
+```bash
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl-sdr.conf
+sudo modprobe -r dvb_usb_rtl28xxu
+```
+
+`lsmod | grep rtl28xxu` でバインドが消えたことを確認できます。あわせて、他のブラウザタブや
+他アプリ（`rtl_tcp`, gqrx, SDR# など）がデバイスを開いていないことを確認してください。
+
 ### 配信済みビルドを使う場合
 
 本番ビルドは静的サイトで、**https://kaminchu.github.io/webisdb-rtl/** で公開しています。
