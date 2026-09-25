@@ -82,6 +82,7 @@ export function EpgScreen() {
       >
         <span className={styles.channelNumber}>ch {entry.physicalChannel}</span>
         <span className={styles.channelNameRow}>
+          {entry.logo && <span className={styles.channelLogo}>{entry.logo}</span>}
           <span className={styles.channelName}>{entry.serviceName}</span>
           {fetching && <Spinner label={`ch ${entry.physicalChannel} の番組情報を取得中`} />}
         </span>

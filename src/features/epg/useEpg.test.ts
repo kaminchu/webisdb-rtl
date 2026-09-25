@@ -93,6 +93,29 @@ describe('buildChannelGuide', () => {
     expect(guide.entries[0].events[0].title).toBe('NST')
   })
 
+  it('attaches the simple station logo per channel', () => {
+    const guide = buildChannelGuide(
+      [channel({ physicalChannel: 19, serviceId: 99 })],
+      [],
+      new Map([[99, 'NST新潟総合テレビ']]),
+      new Map(),
+      { now: NOW, serviceLogos: new Map([[99, 'NST']]) },
+    )
+    expect(guide.entries[0].serviceName).toBe('NST新潟総合テレビ')
+    expect(guide.entries[0].logo).toBe('NST')
+  })
+
+  it('falls back to another known service id for the logo', () => {
+    const guide = buildChannelGuide(
+      [channel({ physicalChannel: 19 })],
+      [],
+      new Map(),
+      new Map([[19, [99]]]),
+      { now: NOW, serviceLogos: new Map([[99, 'NST']]) },
+    )
+    expect(guide.entries[0].logo).toBe('NST')
+  })
+
   it('merges duplicate events preferring the running copy', () => {
     const guide = buildChannelGuide(
       [channel({ physicalChannel: 13, serviceId: 1 })],

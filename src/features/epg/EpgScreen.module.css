@@ -120,6 +120,19 @@
   text-overflow: ellipsis;
 }
 
+.channelLogo {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .body {
   position: relative;
   display: flex;

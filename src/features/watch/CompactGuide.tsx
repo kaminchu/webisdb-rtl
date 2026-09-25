@@ -59,7 +59,10 @@ export function CompactGuide() {
         onClick={() => selectChannel(entry)}
       >
         <span className={styles.channelNumber}>ch {entry.physicalChannel}</span>
-        <span className={styles.channelName}>{entry.serviceName}</span>
+        <span className={styles.channelNameRow}>
+          {entry.logo && <span className={styles.channelLogo}>{entry.logo}</span>}
+          <span className={styles.channelName}>{entry.serviceName}</span>
+        </span>
       </button>
     )
   }

@@ -19,6 +19,20 @@ it('discovers one-seg via PMT and uses SDT for its name without selecting full-s
   expect(receivedTransportStreamId(diagnostics)).toBe(32258)
 })
 
+it('carries the simple logo from SDT into discovered services', () => {
+  const diagnostics = createEmptyDiagnostics()
+  diagnostics.pmt = { programNumber: 32144, version: 0, pcrPid: 512, programInfo: [], streams: [] }
+  diagnostics.sdt = {
+    transportStreamId: 32258,
+    originalNetworkId: 32258,
+    version: 0,
+    services: [
+      { serviceId: 32144, serviceType: 192, serviceName: 'NST携帯', providerName: '', logo: 'NST' },
+    ],
+  }
+  expect(receivedServices(diagnostics)[0].logo).toBe('NST')
+})
+
 it('identifies the NIT transport carrying the received partial-reception service', () => {
   const diagnostics = createEmptyDiagnostics()
   diagnostics.pmt = { programNumber: 32144, version: 0, pcrPid: 512, programInfo: [], streams: [] }

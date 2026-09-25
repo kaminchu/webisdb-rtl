@@ -15,6 +15,8 @@ export interface Service {
   providerName?: string
   /** Service type bit flags from SDT (0x01 = digital TV). */
   serviceType?: number
+  /** Simple logo character string broadcast in the SDT logo transmission descriptor. */
+  logo?: string
   /** Whether this service is currently scrambled (should stay false for one-seg). */
   scrambled?: boolean
 }

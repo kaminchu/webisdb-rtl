@@ -1,6 +1,11 @@
 import { DescriptorTag } from '../../models/descriptor'
 import type { SdtSection, SdtService } from '../../models/si'
-import { decodeServiceDescriptor, findDescriptor, parseDescriptors } from '../descriptors'
+import {
+  decodeLogoTransmission,
+  decodeServiceDescriptor,
+  findDescriptor,
+  parseDescriptors,
+} from '../descriptors'
 
 export function decodeSdt(section: Uint8Array): SdtSection {
   const transportStreamId = (section[3] << 8) | section[4]
@@ -28,7 +33,16 @@ export function decodeSdt(section: Uint8Array): SdtSection {
       serviceName = info.serviceName
     }
 
-    services.push({ serviceId, serviceType, providerName, serviceName })
+    const logoDescriptor = findDescriptor(descriptors, DescriptorTag.LogoTransmission)
+    const logo = logoDescriptor ? decodeLogoTransmission(logoDescriptor.data).text : undefined
+
+    services.push({
+      serviceId,
+      serviceType,
+      providerName,
+      serviceName,
+      ...(logo ? { logo } : {}),
+    })
     offset += 5 + descriptorsLoopLength
   }
 

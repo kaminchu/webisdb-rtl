@@ -5,6 +5,7 @@ import {
   decodeDataComponent,
   decodeExtendedEvent,
   decodeLocalTimeOffset,
+  decodeLogoTransmission,
   decodeNetworkName,
   decodeServiceDescriptor,
   decodeShortEvent,
@@ -45,6 +46,22 @@ describe('decoders', () => {
 
   it('decodes the network name descriptor', () => {
     expect(decodeNetworkName(encodeAribText('テスト'))).toBe('テスト')
+  })
+
+  it('decodes the logo transmission descriptor', () => {
+    expect(decodeLogoTransmission(Uint8Array.from([0x03, ...encodeAribText('NST')]))).toEqual({
+      transmissionType: 0x03,
+      text: 'NST',
+    })
+
+    expect(
+      decodeLogoTransmission(Uint8Array.from([0x01, 0xfe, 0x02, 0xf0, 0x02, 0x00, 0x02])),
+    ).toEqual({ transmissionType: 0x01, logoId: 2, logoVersion: 2, downloadDataId: 2 })
+
+    expect(decodeLogoTransmission(Uint8Array.from([0x02, 0xfe, 0x02]))).toEqual({
+      transmissionType: 0x02,
+      logoId: 2,
+    })
   })
 
   it('decodes the short event descriptor', () => {

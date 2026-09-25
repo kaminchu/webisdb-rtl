@@ -19,6 +19,7 @@ export interface ChannelGuideEntry {
   physicalChannel: number
   serviceId: number | null
   serviceName: string
+  logo?: string
   events: Event[]
 }
 
@@ -34,6 +35,8 @@ export interface ChannelGuideOptions {
   hours?: number
   pastHours?: number
   now?: Date
+  /** Simple station logo per service, keyed by service ID. */
+  serviceLogos?: ReadonlyMap<number, string>
 }
 
 function preferEvent(candidate: Event, existing: Event): boolean {
@@ -129,10 +132,22 @@ export function buildChannelGuide(
       (primaryId !== null ? serviceNames.get(primaryId) : undefined) ??
       `ch ${channel.physicalChannel}`
 
+    let logo = primaryId !== null ? options.serviceLogos?.get(primaryId) : undefined
+    if (!logo) {
+      for (const id of ids) {
+        const candidate = options.serviceLogos?.get(id)
+        if (candidate) {
+          logo = candidate
+          break
+        }
+      }
+    }
+
     entries.push({
       physicalChannel: channel.physicalChannel,
       serviceId: primaryId,
       serviceName,
+      ...(logo ? { logo } : {}),
       events: channelEvents,
     })
     total += channelEvents.length
@@ -281,6 +296,22 @@ export function useEpg(hours = 6): EpgState {
     return map
   }, [liveServices, scanServices, storedServices])
 
+  const serviceLogos = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const service of liveServices) {
+      if (service.logo) map.set(service.serviceId, service.logo)
+    }
+    for (const services of scanServices.values()) {
+      for (const service of services) {
+        if (service.logo && !map.has(service.serviceId)) map.set(service.serviceId, service.logo)
+      }
+    }
+    for (const service of storedServices) {
+      if (service.logo && !map.has(service.serviceId)) map.set(service.serviceId, service.logo)
+    }
+    return map
+  }, [liveServices, scanServices, storedServices])
+
   const serviceIdsByChannel = useMemo(
     () =>
       groupServiceIdsByChannel({
@@ -296,8 +327,13 @@ export function useEpg(hours = 6): EpgState {
   const allEvents = storedEvents
 
   const guide = useMemo(
-    () => buildChannelGuide(channels, allEvents, serviceNames, serviceIdsByChannel, { hours, now }),
-    [channels, allEvents, serviceNames, serviceIdsByChannel, hours, now],
+    () =>
+      buildChannelGuide(channels, allEvents, serviceNames, serviceIdsByChannel, {
+        hours,
+        now,
+        serviceLogos,
+      }),
+    [channels, allEvents, serviceNames, serviceIdsByChannel, hours, now, serviceLogos],
   )
 
   const selectChannel = useCallback((entry: ChannelGuideEntry) => {

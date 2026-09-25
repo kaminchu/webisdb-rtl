@@ -253,6 +253,8 @@ export interface SdtBuilderService {
   provider: Uint8Array
   name: Uint8Array
   runningStatus?: number
+  /** Extra descriptors appended after the service descriptor. */
+  descriptors?: number[]
 }
 
 export interface SdtBuilderOptions {
@@ -265,7 +267,10 @@ export interface SdtBuilderOptions {
 export function buildSdt(options: SdtBuilderOptions): Uint8Array {
   const body: number[] = [...u16(options.originalNetworkId), 0xff]
   for (const service of options.services) {
-    const descriptor = buildServiceDescriptor(service.serviceType, service.provider, service.name)
+    const descriptor = [
+      ...buildServiceDescriptor(service.serviceType, service.provider, service.name),
+      ...(service.descriptors ?? []),
+    ]
     const runningStatus = service.runningStatus ?? 0
     body.push(
       ...u16(service.serviceId),

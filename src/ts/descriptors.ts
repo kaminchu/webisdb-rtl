@@ -1,6 +1,6 @@
 import { decodeAribText } from '../data/arib/decode'
 import { DescriptorTag } from '../models/descriptor'
-import type { Descriptor } from '../models/descriptor'
+import type { Descriptor, LogoTransmission } from '../models/descriptor'
 import type { AvcConfig } from '../models/media'
 import { bcdToNumber, parseMjdTime } from './sections/tstime'
 
@@ -39,6 +39,25 @@ export function decodeServiceDescriptor(data: Uint8Array): ServiceDescriptorInfo
 
 export function decodeNetworkName(data: Uint8Array): string {
   return decodeAribText(data)
+}
+
+export function decodeLogoTransmission(data: Uint8Array): LogoTransmission {
+  const transmissionType = data[0]
+  if (transmissionType === 0x01 && data.length >= 7) {
+    return {
+      transmissionType,
+      logoId: ((data[1] & 0x01) << 8) | data[2],
+      logoVersion: ((data[3] & 0x0f) << 8) | data[4],
+      downloadDataId: (data[5] << 8) | data[6],
+    }
+  }
+  if (transmissionType === 0x02 && data.length >= 3) {
+    return { transmissionType, logoId: ((data[1] & 0x01) << 8) | data[2] }
+  }
+  if (transmissionType === 0x03) {
+    return { transmissionType, text: decodeAribText(data.subarray(1)) }
+  }
+  return { transmissionType }
 }
 
 export interface ShortEventInfo {

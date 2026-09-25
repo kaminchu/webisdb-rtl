@@ -12,6 +12,7 @@ export function receivedServices(diagnostics: AppState['diagnostics']): Service[
           name: sdt.serviceName,
           providerName: sdt.providerName,
           serviceType: sdt.serviceType,
+          ...(sdt.logo ? { logo: sdt.logo } : {}),
         }
       : (diagnostics.services.find((service) => service.serviceId === serviceId) ?? {
           serviceId,

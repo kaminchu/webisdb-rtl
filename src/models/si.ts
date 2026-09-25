@@ -34,6 +34,8 @@ export interface SdtService {
   serviceType: number
   providerName: string
   serviceName: string
+  /** Simple logo character string from the logo transmission descriptor, if any. */
+  logo?: string
 }
 
 export interface SdtSection {
