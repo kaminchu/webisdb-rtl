@@ -12,7 +12,7 @@ export interface OneSegPlayerOptions {
   onError?: (error: Error) => void
   /** A/V sync render window in seconds. */
   toleranceSec?: number
-  /** Playback jitter buffer depth in seconds; packets are held this long before decoding. */
+  /** Playback delay in seconds, used to absorb packet arrival jitter. */
   bufferSec?: number
   /** Wall clock in seconds; overridable for tests. */
   clock?: () => number
@@ -31,12 +31,14 @@ export interface PlayerStats {
 }
 
 const DEFAULT_VIDEO_CONFIG: VideoDecoderConfigInput = { codec: 'avc1.42E01E' }
-const MAX_PENDING_FRAMES = 8
+const MAX_PENDING_FRAMES = 64
+// Video access-unit timing needs the following PES; decode before its PTS is due.
+const DECODE_AHEAD_SEC = 1
 const CAPTURE_FPS = 30
 
 interface BufferedPes {
   packet: PesPacket
-  receivedAt: number
+  ptsSec: number
 }
 
 function isCanvasElement(
@@ -66,7 +68,8 @@ export class OneSegPlayer {
   private readonly pesQueue: BufferedPes[] = []
   private queueTimer: ReturnType<typeof setTimeout> | null = null
   private readonly pending: VideoFrame[] = []
-  private drainScheduled = false
+  private drainHandle: number | ReturnType<typeof setTimeout> | null = null
+  private drainUsesAnimationFrame = false
   private videoConfig: AvcConfig | VideoDecoderConfigInput | null = null
   private audioConfig: AudioDecoderConfigInput | null = null
   private lastPts: number | null = null
@@ -98,11 +101,14 @@ export class OneSegPlayer {
     this.audioDecoder = new AudioStreamDecoder({
       ...(options.audioContext ? { audioContext: options.audioContext } : {}),
       onError: options.onError,
+      playbackTime: () => this.avSync.now(),
+      maxQueueSec: DECODE_AHEAD_SEC + 1,
       onBufferQueued: () => {
         this.counters.audioBuffersQueued++
       },
     })
     this.avSync = new AvSync({
+      wallClock: this.now,
       audioClock: () => (this.audioDecoder.anchored ? this.audioDecoder.clockTime : null),
       ...(options.toleranceSec !== undefined ? { toleranceSec: options.toleranceSec } : {}),
     })
@@ -133,12 +139,19 @@ export class OneSegPlayer {
   }
 
   pushPes(packet: PesPacket): void {
-    if (this.bufferSec <= 0) {
-      this.routePes(packet)
-      return
+    if (
+      !this.avSync.anchored &&
+      packet.pts !== undefined &&
+      (packet.kind === 'video' || packet.kind === 'audio')
+    ) {
+      this.avSync.anchor(packet.pts, this.bufferSec)
     }
-    this.pesQueue.push({ packet, receivedAt: this.now() })
-    this.scheduleQueueDrain()
+    const ptsSec = packet.pts !== undefined ? packet.pts / 90_000 : this.avSync.now()
+    this.pesQueue.push({ packet, ptsSec })
+    this.pesQueue.sort((a, b) => a.ptsSec - b.ptsSec)
+    if (this.queueTimer !== null) clearTimeout(this.queueTimer)
+    this.queueTimer = null
+    this.drainQueue()
   }
 
   private routePes(packet: PesPacket): void {
@@ -184,7 +197,10 @@ export class OneSegPlayer {
     if (this.queueTimer !== null) return
     const oldest = this.pesQueue[0]
     if (!oldest) return
-    const waitMs = Math.max(0, (oldest.receivedAt + this.bufferSec - this.now()) * 1000)
+    const waitMs = Math.max(
+      1,
+      Math.min(100, (oldest.ptsSec - DECODE_AHEAD_SEC - this.avSync.now()) * 1000),
+    )
     this.queueTimer = setTimeout(() => {
       this.queueTimer = null
       this.drainQueue()
@@ -192,8 +208,8 @@ export class OneSegPlayer {
   }
 
   private drainQueue(): void {
-    const cutoff = this.now() - this.bufferSec
-    while (this.pesQueue.length > 0 && this.pesQueue[0].receivedAt <= cutoff) {
+    const cutoff = this.avSync.now() + DECODE_AHEAD_SEC
+    while (this.pesQueue.length > 0 && this.pesQueue[0].ptsSec <= cutoff) {
       const entry = this.pesQueue.shift()
       if (entry) this.routePes(entry.packet)
     }
@@ -248,22 +264,13 @@ export class OneSegPlayer {
   private onVideoFrame(frame: VideoFrame): void {
     const pts90k = microsToPts90k(frame.timestamp)
     if (!this.avSync.anchored) this.avSync.anchor(pts90k)
-    const decision = this.avSync.decision(pts90k)
-    if (decision === SyncDecision.Drop) {
+    this.pending.push(frame)
+    this.pending.sort((a, b) => a.timestamp - b.timestamp)
+    if (this.pending.length > MAX_PENDING_FRAMES) {
+      this.pending.pop()?.close()
       this.counters.dropped++
-      frame.close()
-      return
     }
-    if (decision === SyncDecision.Hold) {
-      this.pending.push(frame)
-      if (this.pending.length > MAX_PENDING_FRAMES) {
-        this.pending.shift()?.close()
-        this.counters.dropped++
-      }
-      this.scheduleDrain()
-      return
-    }
-    this.drawFrame(frame)
+    this.scheduleDrain()
   }
 
   private drawFrame(frame: VideoFrame): void {
@@ -292,35 +299,46 @@ export class OneSegPlayer {
   }
 
   private scheduleDrain(): void {
-    if (this.drainScheduled) return
-    this.drainScheduled = true
+    if (this.drainHandle !== null) return
     const run = () => {
-      this.drainScheduled = false
+      this.drainHandle = null
       this.drainPending()
     }
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
-    else setTimeout(run, 16)
+    this.drainUsesAnimationFrame = typeof requestAnimationFrame === 'function'
+    this.drainHandle = this.drainUsesAnimationFrame
+      ? requestAnimationFrame(run)
+      : setTimeout(run, 16)
   }
 
   private drainPending(): void {
     if (this.pending.length === 0) return
-    const remaining: VideoFrame[] = []
-    for (const frame of this.pending) {
+    let due: VideoFrame | null = null
+    while (this.pending.length > 0) {
+      const frame = this.pending[0]
       const decision = this.avSync.decision(microsToPts90k(frame.timestamp))
-      if (decision === SyncDecision.Render) this.drawFrame(frame)
-      else if (decision === SyncDecision.Drop) {
+      if (decision === SyncDecision.Hold) break
+      this.pending.shift()
+      if (decision === SyncDecision.Drop) {
         this.counters.dropped++
         frame.close()
       } else {
-        remaining.push(frame)
+        if (due) {
+          due.close()
+          this.counters.dropped++
+        }
+        due = frame
       }
     }
-    this.pending.length = 0
-    this.pending.push(...remaining)
+    if (due) this.drawFrame(due)
     if (this.pending.length > 0) this.scheduleDrain()
   }
 
   private clearPending(): void {
+    if (this.drainHandle !== null) {
+      if (this.drainUsesAnimationFrame) cancelAnimationFrame(this.drainHandle as number)
+      else clearTimeout(this.drainHandle)
+      this.drainHandle = null
+    }
     for (const frame of this.pending) frame.close()
     this.pending.length = 0
   }

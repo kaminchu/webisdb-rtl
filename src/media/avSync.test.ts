@@ -41,20 +41,20 @@ describe('AvSync', () => {
     const sync = new AvSync({ wallClock: () => wall })
     sync.anchor(90_000 * 10)
     expect(sync.decision(90_000 * 10)).toBe(SyncDecision.Render)
-    expect(sync.decision(90_000 * 10.05)).toBe(SyncDecision.Render)
+    expect(sync.decision(90_000 * 10.05)).toBe(SyncDecision.Hold)
     expect(sync.decision(90_000 * 11)).toBe(SyncDecision.Hold)
     expect(sync.decision(90_000 * 9.9)).toBe(SyncDecision.Render)
     expect(sync.decision(90_000 * 9)).toBe(SyncDecision.Drop)
   })
 
   it('follows the audio clock when audio is playing', () => {
-    let audio = 5
+    let audio = 20
     let wall = 1000
     const sync = new AvSync({ wallClock: () => wall, audioClock: () => audio })
-    sync.anchor(90_000 * 20)
+    sync.anchor(90_000 * 19)
     expect(sync.usesAudioClock).toBe(true)
     expect(sync.now()).toBeCloseTo(20)
-    audio = 5.5
+    audio = 20.5
     wall = 1000.2
     expect(sync.now()).toBeCloseTo(20.5)
     expect(sync.decision(90_000 * 21)).toBe(SyncDecision.Hold)
@@ -62,10 +62,11 @@ describe('AvSync', () => {
   })
 
   it('falls back to the wall clock when audio stops', () => {
-    let audio: number | null = 5
+    let audio: number | null = 20
     let wall = 1000
     const sync = new AvSync({ wallClock: () => wall, audioClock: () => audio })
     sync.anchor(90_000 * 20)
+    expect(sync.now()).toBe(20)
     audio = null
     wall = 1000.25
     expect(sync.usesAudioClock).toBe(false)
@@ -78,6 +79,21 @@ describe('AvSync', () => {
     expect(sync.decision(90_000 * 0.4)).toBe(SyncDecision.Render)
     expect(sync.decision(90_000 * 0.6)).toBe(SyncDecision.Hold)
     expect(DEFAULT_TOLERANCE_SEC).toBeLessThan(0.5)
+  })
+
+  it('adopts audio media time even when audio starts after video', () => {
+    let audio: number | null = null
+    let wall = 100
+    const sync = new AvSync({ wallClock: () => wall, audioClock: () => audio })
+    sync.anchor(900_000, 3)
+    expect(sync.now()).toBe(7)
+    wall = 103
+    audio = 9.8
+    expect(sync.now()).toBe(9.8)
+    expect(sync.usesAudioClock).toBe(true)
+    audio = null
+    wall = 103.1
+    expect(sync.now()).toBeCloseTo(9.9)
   })
 
   it('resets its anchor', () => {

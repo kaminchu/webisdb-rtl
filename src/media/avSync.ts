@@ -1,7 +1,7 @@
 /** PES timestamps are expressed in 90 kHz units. */
 export const PTS_HZ = 90_000
 
-export const DEFAULT_TOLERANCE_SEC = 0.08
+export const DEFAULT_TOLERANCE_SEC = 0
 export const DEFAULT_MAX_LATE_SEC = 0.5
 
 export function pts90kToSeconds(pts: number): number {
@@ -28,7 +28,7 @@ export type SyncDecision = (typeof SyncDecision)[keyof typeof SyncDecision]
 export interface AvSyncOptions {
   /** Wall clock in seconds; defaults to `performance.now() / 1000`. */
   wallClock?: () => number
-  /** Audio clock in seconds, or null while audio is unavailable. */
+  /** Audio media time (PTS seconds), or null while audio is unavailable. */
   audioClock?: () => number | null
   /** Render window around the master clock, in seconds. */
   toleranceSec?: number
@@ -46,7 +46,6 @@ export class AvSync {
   private readonly audioClock: (() => number | null) | null
   private readonly toleranceSec: number
   private readonly maxLateSec: number
-  private audioOffsetSec: number | null = null
   private wallOffsetSec: number | null = null
   private anchorPtsValue: number | null = null
 
@@ -58,33 +57,33 @@ export class AvSync {
   }
 
   get anchored(): boolean {
-    return this.audioOffsetSec !== null || this.wallOffsetSec !== null
+    return this.wallOffsetSec !== null
   }
 
   get usesAudioClock(): boolean {
-    return this.audioOffsetSec !== null && (this.audioClock?.() ?? null) !== null
+    return (this.audioClock?.() ?? null) !== null
   }
 
   get anchoredPtsSec(): number | null {
     return this.anchorPtsValue
   }
 
-  /** Bind the master clock to a 90 kHz PTS. Both offsets are captured so the
-   * clock keeps working if the audio clock later disappears. */
-  anchor(pts90k: number): void {
+  /** Bind the wall clock to a PTS, allowing time to buffer before presentation. */
+  anchor(pts90k: number, delaySec = 0): void {
     const ptsSec = pts90kToSeconds(pts90k)
     const wall = this.wallClock()
-    this.wallOffsetSec = wall - ptsSec
-    const audio = this.audioClock?.() ?? null
-    if (audio !== null) this.audioOffsetSec = ptsSec - audio
+    this.wallOffsetSec = wall - ptsSec + delaySec
     this.anchorPtsValue = ptsSec
   }
 
   /** Current media time in seconds. */
   now(): number {
     const audio = this.audioClock?.() ?? null
-    if (audio !== null && this.audioOffsetSec !== null) return audio + this.audioOffsetSec
     const wall = this.wallClock()
+    if (audio !== null) {
+      this.wallOffsetSec = wall - audio
+      return audio
+    }
     return this.wallOffsetSec !== null ? wall - this.wallOffsetSec : wall
   }
 
@@ -98,7 +97,6 @@ export class AvSync {
   }
 
   reset(): void {
-    this.audioOffsetSec = null
     this.wallOffsetSec = null
     this.anchorPtsValue = null
   }

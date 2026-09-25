@@ -57,7 +57,7 @@ describe('OneSegPlayer jitter buffer', () => {
     vi.useRealTimers()
   })
 
-  it('holds packets for the configured buffer before routing them', () => {
+  it('decodes ahead of the buffered presentation time', () => {
     vi.useFakeTimers()
     let now = 0
     const player = new OneSegPlayer(document.createElement('canvas'), {
@@ -69,12 +69,29 @@ describe('OneSegPlayer jitter buffer', () => {
     expect(player.stats.videoSamples).toBe(0)
     expect(player.stats.bufferedPes).toBe(1)
 
-    vi.advanceTimersByTime(2_999)
+    now = 1.999
+    vi.advanceTimersByTime(1_999)
     expect(player.stats.videoSamples).toBe(0)
 
-    now = 3
-    vi.advanceTimersByTime(1)
+    now = 2
+    vi.advanceTimersByTime(100)
     expect(player.stats.videoSamples).toBe(1)
+    expect(player.stats.bufferedPes).toBe(0)
+    player.close()
+  })
+
+  it('absorbs arrival jitter using PTS rather than delaying every arrival', () => {
+    vi.useFakeTimers()
+    let now = 0
+    const player = new OneSegPlayer(document.createElement('canvas'), {
+      bufferSec: 3,
+      clock: () => now,
+    })
+    player.pushPes(packet('video', 90_000))
+    now = 2.8
+    vi.advanceTimersByTime(2_800)
+    player.pushPes(packet('video', 135_000))
+    expect(player.stats.videoSamples).toBe(2)
     expect(player.stats.bufferedPes).toBe(0)
     player.close()
   })
@@ -132,6 +149,113 @@ describe('OneSegPlayer without WebCodecs', () => {
     player.pushPes(packet('video', 1))
     expect(first.videoSamples).toBe(0)
     expect(player.stats.videoSamples).toBe(1)
+    player.close()
+  })
+})
+
+function setup(bufferSec = 0) {
+  let output!: (frame: VideoFrame) => void
+  vi.stubGlobal(
+    'VideoDecoder',
+    class {
+      state = 'configured'
+      constructor(init: VideoDecoderInit) {
+        output = init.output
+      }
+      configure() {}
+      close() {}
+    },
+  )
+  let callback: FrameRequestCallback | null = null
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    callback = cb
+    return 1
+  })
+  const cancel = vi.fn(() => {
+    callback = null
+  })
+  vi.stubGlobal('cancelAnimationFrame', cancel)
+  const canvas = document.createElement('canvas')
+  const draw = vi.fn()
+  vi.spyOn(canvas, 'getContext').mockReturnValue({
+    drawImage: draw,
+  } as unknown as CanvasRenderingContext2D)
+  let now = 0
+  const player = new OneSegPlayer(canvas, { clock: () => now, bufferSec })
+  player.pushPes(packet('video', 90_000))
+  const frames = Array.from(
+    { length: 15 },
+    (_, i) =>
+      ({
+        timestamp: 1_000_000 + Math.round((i * 1_000_000) / 15),
+        displayWidth: 320,
+        displayHeight: 180,
+        close: vi.fn(),
+      }) as unknown as VideoFrame,
+  )
+  return {
+    player,
+    draw,
+    frames,
+    cancel,
+    emit: (frame: VideoFrame) => output(frame),
+    tick: (time: number) => {
+      now = time
+      const cb = callback
+      callback = null
+      cb?.(time * 1000)
+    },
+  }
+}
+
+describe('OneSegPlayer frame presentation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('presents a burst of 15 fps frames individually without dropping the oldest eight', () => {
+    const { player, draw, frames, emit, tick } = setup()
+    frames.forEach(emit)
+    expect(draw).not.toHaveBeenCalled()
+    for (let i = 0; i < frames.length; i++) {
+      tick(i / 15 + 0.001)
+      expect(draw).toHaveBeenCalledTimes(i + 1)
+      expect(draw.mock.lastCall?.[0]).toBe(frames[i])
+    }
+    expect(player.stats.dropped).toBe(0)
+    frames.forEach((frame) => expect(frame.close).toHaveBeenCalledTimes(1))
+    player.close()
+  })
+
+  it('holds decoded frames until the configured presentation delay has elapsed', () => {
+    const { player, draw, frames, emit, tick } = setup(3)
+    player.configureVideo({ codec: 'avc1.42E01E' })
+    frames.forEach(emit)
+    tick(2.99)
+    expect(draw).not.toHaveBeenCalled()
+    tick(3.001)
+    expect(draw).toHaveBeenCalledTimes(1)
+    expect(draw.mock.lastCall?.[0]).toBe(frames[0])
+    player.close()
+  })
+
+  it('draws only the newest due frame after a delayed animation callback', () => {
+    const { player, draw, frames, emit, tick } = setup()
+    frames.forEach(emit)
+    tick(0.201)
+    expect(draw).toHaveBeenCalledTimes(1)
+    expect(draw.mock.lastCall?.[0]).toBe(frames[3])
+    expect(player.stats.dropped).toBe(3)
+    player.close()
+    frames.forEach((frame) => expect(frame.close).toHaveBeenCalledTimes(1))
+  })
+
+  it('cancels pending rendering and closes every frame on reset', () => {
+    const { player, draw, frames, emit, tick, cancel } = setup()
+    frames.forEach(emit)
+    player.reset()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    tick(1)
+    expect(draw).not.toHaveBeenCalled()
+    frames.forEach((frame) => expect(frame.close).toHaveBeenCalledTimes(1))
     player.close()
   })
 })

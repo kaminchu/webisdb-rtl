@@ -14,11 +14,13 @@ export interface AudioStreamDecoderOptions {
   onBufferQueued?: () => void
   /** Maximum scheduling look-ahead in seconds; later buffers are dropped. */
   maxQueueSec?: number
+  /** Shared PTS clock used to schedule the first audio buffer. */
+  playbackTime?: () => number
 }
 
 const LEAD_SEC = 0.05
 const DEFAULT_MAX_QUEUE_SEC = 1
-const DEFAULT_MAX_QUEUE_LENGTH = 32
+const DEFAULT_MAX_QUEUE_LENGTH = 128
 
 /** HE-AAC / HE-AACv2 (SBR / PS) codec strings used by one-seg audio. */
 export function isHeAac(codec: string): boolean {
@@ -43,17 +45,20 @@ export class AudioStreamDecoder {
   private readonly onError: ((error: Error) => void) | undefined
   private readonly onBufferQueued: (() => void) | undefined
   private readonly maxQueueSec: number
+  private readonly playbackTime: (() => number) | undefined
   private readonly queue: AudioBufferSourceNode[] = []
   private decoder: AudioDecoder | null = null
   private config: AudioDecoderConfig | null = null
   private baseContextTime: number | null = null
   private basePtsSec: number | null = null
+  private scheduledUntil = 0
   private channelMode: AudioChannelMode = 'stereo'
 
   constructor(options: AudioStreamDecoderOptions = {}) {
     this.onError = options.onError
     this.onBufferQueued = options.onBufferQueued
     this.maxQueueSec = options.maxQueueSec ?? DEFAULT_MAX_QUEUE_SEC
+    this.playbackTime = options.playbackTime
     let context = options.audioContext ?? null
     let owned = false
     if (!context && typeof AudioContext !== 'undefined') {
@@ -138,6 +143,7 @@ export class AudioStreamDecoder {
     this.stopQueued()
     this.baseContextTime = null
     this.basePtsSec = null
+    this.scheduledUntil = 0
     if (!this.supported || !this.config) return
     this.recreate()
   }
@@ -148,6 +154,7 @@ export class AudioStreamDecoder {
     this.config = null
     this.baseContextTime = null
     this.basePtsSec = null
+    this.scheduledUntil = 0
     if (this.ownedContext && this.context) void this.context.close()
   }
 
@@ -179,10 +186,36 @@ export class AudioStreamDecoder {
     const context = this.context
     const gain = this.gain
     if (!context || !gain) return
+    if (context.state !== 'running') {
+      this.stopQueued()
+      this.baseContextTime = null
+      this.basePtsSec = null
+      this.scheduledUntil = 0
+      return
+    }
     const channels = data.numberOfChannels
     const frames = data.numberOfFrames
     if (channels <= 0 || frames <= 0) return
 
+    const ptsSec = data.timestamp / 1_000_000
+    const now = context.currentTime
+    const duration = frames / data.sampleRate
+    if (this.baseContextTime === null || this.basePtsSec === null) {
+      const delay = this.playbackTime ? ptsSec - this.playbackTime() : LEAD_SEC
+      this.baseContextTime = now + Math.max(LEAD_SEC, delay)
+      this.basePtsSec = ptsSec
+    }
+    let when = this.baseContextTime + (ptsSec - this.basePtsSec)
+    if (when + duration <= now) return
+    if (when > now + this.maxQueueSec || this.queue.length >= DEFAULT_MAX_QUEUE_LENGTH) return
+
+    // After an underrun, move the PTS anchor once so subsequent buffers remain
+    // consecutive instead of starting an entire late batch simultaneously.
+    if (when < now && this.scheduledUntil <= now) {
+      this.baseContextTime += now + LEAD_SEC - when
+      when = now + LEAD_SEC
+    }
+    const offset = Math.max(0, now - when)
     const buffer = context.createBuffer(channels, frames, data.sampleRate)
     for (let channel = 0; channel < channels; channel++) {
       data.copyTo(buffer.getChannelData(channel), { planeIndex: channel, format: 'f32-planar' })
@@ -196,16 +229,6 @@ export class AudioStreamDecoder {
       }
     }
 
-    const ptsSec = data.timestamp / 1_000_000
-    if (this.baseContextTime === null || this.basePtsSec === null) {
-      this.baseContextTime = context.currentTime + LEAD_SEC
-      this.basePtsSec = ptsSec
-    }
-    const now = context.currentTime
-    let when = this.baseContextTime + (ptsSec - this.basePtsSec)
-    if (when < now) when = now
-    if (when > now + this.maxQueueSec || this.queue.length >= DEFAULT_MAX_QUEUE_LENGTH) return
-
     const source = context.createBufferSource()
     source.buffer = buffer
     source.connect(gain)
@@ -214,10 +237,12 @@ export class AudioStreamDecoder {
       () => {
         const index = this.queue.indexOf(source)
         if (index >= 0) this.queue.splice(index, 1)
+        source.disconnect()
       },
       { once: true },
     )
-    source.start(when)
+    source.start(Math.max(now, when), offset)
+    this.scheduledUntil = when + duration
     this.queue.push(source)
     this.onBufferQueued?.()
   }
