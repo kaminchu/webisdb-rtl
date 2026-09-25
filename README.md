@@ -9,6 +9,9 @@ The entire receive chain (USB driver, OFDM demodulation, FEC, MPEG-TS demuxing a
 decoding) runs client-side, so the app is a static bundle that can be hosted on GitHub Pages
 and installed as an offline-capable PWA.
 
+A hosted build is available at **https://kaminchu.github.io/webisdb-rtl/** — open it in
+supported Chrome over HTTPS and click the stage to select your receiver.
+
 **日本語のREADMEは [README.ja.md](README.ja.md) です。**
 
 ## Background
@@ -78,8 +81,9 @@ region and transmitter or run a channel scan, then return to Watch.
 
 ### Using a hosted build
 
-The production build is a static site. Open it in supported Chrome over HTTPS and click the
-stage to grant access to the receiver. The app can be installed as a PWA from the browser
+The production build is a static site, published at
+**https://kaminchu.github.io/webisdb-rtl/**. Open it in supported Chrome over HTTPS and click
+the stage to grant access to the receiver. The app can be installed as a PWA from the browser
 menu for offline launch.
 
 ## Usage
