@@ -1,32 +1,53 @@
 # WebISDB-RTL
 
-ブラウザだけで動くワンセグ (ISDB-T) 受信アプリです。RTL-SDR を WebUSB で制御し、日本の
-地上デジタルテレビ放送のワンセグ信号をブラウザ内で復調して、映像・音声・字幕を再生します。
-ネイティブアプリもバックエンドサーバーもインストールも不要です。
+**WebISDB-RTL** は、ブラウザだけで動く日本の地上デジタルテレビ放送（ISDB-T）ワンセグ受信
+アプリです。RTL-SDR を WebUSB で制御し、ワンセグ信号をブラウザ内で復調して、映像・音声・
+字幕を再生します。ネイティブアプリもバックエンドサーバーもインストールも不要です。
 
-USB ドライバ、OFDM 復調、FEC、MPEG-TS デマックス、映像・音声デコードまでをすべてクライアント
-サイドで完結させるため、GitHub Pages で配信でき、オフライン起動可能な PWA としてインストール
-できます。
+USB ドライバ、OFDM 復調、FEC、MPEG-TS デマックス、WebCodecs デコードまでをすべて
+クライアントサイドで完結させるため、GitHub Pages で配信できる静的バンドルとなり、オフライン
+起動可能な PWA としてインストールできます。
+
+**English README is [README.md](README.md).**
+
+## 背景
+
+PC で日本の地上デジタル放送を受信するには、これまで専用の PCIe/USB チューナーカードが必要
+でしたが、そうした製品は次々と生産終了になっています。一方 RTL-SDR は安価で入手しやすく、
+同じ RTL2832U チップは数千円で売られているワンセグ USB チューナーにも使われています。
+WebISDB-RTL はこうしたハードウェアを対象に、残っていた最後の壁である「OS とインストール済み
+アプリケーション」を取り払います。
+
+ワンセグ放送はブラウザクライアントと相性が良い特徴を持っています。
+
+- **小さく、すでに符号化済み。** ワンセグの映像・音声は低ビットレートの H.264/AAC なので、
+  非力なモバイル端末でもトランスコードなしでデコード・表示できます。
+- **チャンネルの 1/6 だけ。** ワンセグはフルセグの一部の帯域しか使わないため、小さなアンテナと
+  安価なドングルで受信できます。
+- **インストール不要。** WebUSB と WebCodecs があれば、受信機は Web アプリとして動きます。
+  ページを開き、デバイスを選ぶだけで視聴できます。ビルドやインストールするドライバ・
+  ネイティブプログラムはありません。
+
+本プロジェクトはすべてをクライアント側で完結させます。静的サイトとして GitHub Pages や任意の
+静的ホスティングで配信でき、一度読み込めばオフラインでも動作します。
 
 ## 主な機能
 
 - **独自 WebUSB RTL-SDR ドライバ** — RTL2832U ベースバンドに加え、R820T2 (Blog V3)、
-  R828D (Blog V4)、FC0013 チューナーに対応。
-- **ISDB-T ワンセグ復調** — DC 除去、64/63 MSps への分数リサンプリング、GI 相関による
-  OFDM 同期、搬送波周波数オフセット補正、TMCC 復号、チャネル推定・等化、周波数/時間/ビット
-  デインターリーブ、デパンクチャ + Viterbi、エネルギー逆拡散、Reed–Solomon RS(204,188) を
-  経て MPEG-TS を生成。
+  R828D (Blog V4)、Fitipower FC0013 チューナーに対応。I2C でチューナーを自動判定します。
+- **ブラウザ内での ISDB-T ワンセグ復調** — OFDM 同期、搬送波周波数オフセット補正、TMCC
+  復号、チャネル推定・等化、Reed–Solomon RS(204,188) までの FEC を経て MPEG-TS を生成。
 - **MPEG-TS 解析** — PAT / PMT / SDT / EIT / NIT / TDT / TOT とストリーム統計。
-- **再生** — WebCodecs による H.264 映像と AAC 音声、A/V 同期、字幕描画、主/副音声の切り替え、
-  設定可能なジッタバッファ。
-- **EPG（番組表）** — ライブ EIT と IndexedDB に保存した番組情報から複数局横断の番組表を生成し、
-  番組表から選局可能。
-- **選局・スキャン** — 物理チャンネル 13〜52、周波数直接指定、地域・送信所からの選択、GPS
-  自動選択、チャンネルスキャンとサービス取得。
-- **診断** — Signal level、C/N、MER、周波数オフセット、USB/IQ/DSP スループット、バッファ占有量、
-  スペクトラム表示。
-- **PWA** — Service Worker によるキャッシュでオフライン起動が可能。一度読み込めば、UI と
-  取得済みチャンネルデータはネットワーク接続なしで動作します。
+- **再生** — WebCodecs による H.264 映像と AAC 音声、A/V 同期、ARIB 字幕描画、主/副音声の
+  切り替え、設定可能なジッタバッファ。
+- **EPG（番組表）** — ライブ EIT と IndexedDB に保存した番組情報から複数局横断の番組表を
+  生成し、番組表から選局できます。
+- **選局・スキャン** — 物理チャンネル 13〜52、地域・送信所からの選択、GPS 自動選択、
+  サービス取得を伴うチャンネルスキャン。
+- **診断** — Signal level、C/N、MER、周波数オフセット、USB/IQ/DSP スループット、バッファ
+  占有量、スペクトラム表示。
+- **PWA** — Service Worker がアプリをキャッシュするためオフライン起動が可能。一度読み込めば、
+  UI と取得済みチャンネルデータはネットワーク接続なしで動作します。
 
 ## 動作要件
 
@@ -36,6 +57,10 @@ USB ドライバ、OFDM 復調、FEC、MPEG-TS デマックス、映像・音声
   搭載の汎用 RTL2832U ドングル。信号を受信するには UHF 地上波用のアンテナが必要です。
 - **実行環境**: 開発・ビルドには Node.js と npm が必要です。
 
+ISDB-T の**ワンセグのみ**を対象とします。フルセグ、BS/CS、B-CAS/ACAS のスクランブル解除、
+データ放送 (BML) の描画は対象外です。対応する伝送パラメータと受信機の内部構成は
+[docs/architecture.md](docs/architecture.md) を参照してください。
+
 ## はじめかた
 
 ```bash
@@ -43,19 +68,72 @@ npm install
 npm run dev
 ```
 
-Vite が表示する HTTPS URL を開き、視聴画面でステージをクリックして RTL-SDR デバイスを選択
-します。チャンネルが未設定の場合は先に設定画面が開くので、地域と送信所を選ぶかチャンネル
-スキャンを実行してから視聴画面に戻ります。
+Vite が表示する HTTPS URL を開きます（開発サーバーは自己署名証明書を使うため、ブラウザの
+警告を承認してください）。視聴画面でステージをクリックし、WebUSB のデバイス選択から
+RTL-SDR を選びます。チャンネルが未設定の場合は先に設定画面が開くので、地域と送信所を選ぶか
+チャンネルスキャンを実行してから視聴画面に戻ります。
 
-## コマンド
+### 配信済みビルドを使う場合
+
+本番ビルドは静的サイトです。対応する Chrome で HTTPS として開き、ステージをクリックして
+受信機へのアクセスを許可します。ブラウザのメニューから PWA としてインストールすると、
+オフライン起動できます。
+
+## 使い方
+
+画面は 3 つあり、各画面の上部バーのサイドバーから移動します。**視聴**、**番組表**、**設定**です。
+URL のハッシュが画面と対応しているため、画面ごとにブックマークできます。
+
+### 視聴
+
+- 未接続時にステージをクリックすると、WebUSB のデバイス選択が開き受信を開始します。
+- 接続後にステージをクリックするとオーバーレイの操作パネルが開きます。
+  - **音声** — ステレオ、主音声、副音声。
+  - **字幕** — 表示する / 表示しない。
+  - **デバッグ** — ライブのデバッグ表示（FPS、ドロップ数、デコーダカウンタ、Signal level、
+    C/N、BER、TS/DSP スループット、バッファ占有量と遅延）。
+- 下部のコンパクト番組表に、設定済みチャンネルと現在/次の番組が並びます。チャンネルか番組を
+  タップするとそのチャンネルへ選局します。
+- 再接続時は、既に許可済みのデバイスを選択ダイアログなしで再利用し、最後に視聴した
+  チャンネルへ選局します。
+
+### 番組表
+
+番組表はライブ EIT と IndexedDB に保存した番組情報から生成されるため、リロード後も残ります。
+設定済みチャンネルごとの時間割を表示し、番組を選ぶとそのチャンネルへ選局します。ワンセグは
+現在/次の番組しか放送しないため、番組表は意図的にコンパクトにしています。
+
+### 設定
+
+- **チャンネル設定** — 2 通りの方法でチャンネルを選びます。
+  - **地域・送信所から選ぶ** — 同梱の局データから都道府県と送信所を選びます。
+    **現在地から自動選択 (GPS)** では最寄りの送信所を自動選択します。
+  - **チャンネルスキャンで選ぶ** — 物理チャンネル 13〜52 をスキャンし、信号のあった
+    チャンネルを追加します。結果は保存され再利用されます。
+- **再生設定** — 再生ジッタバッファ（0〜10 秒、既定 3 秒）。大きくすると受信の途切れを
+  吸収する代わりに再生が遅れます。視聴画面を開き直すと適用されます。
+- **受信設定** — チューナーゲイン（手動 dB または **AGC**）とサンプルレート（1.2 / 2.0 /
+  2.048 / 2.4 MSps）。サンプルレートは再接続時に適用されます。
+
+## ビルドとセルフホスト
+
+```bash
+npm run build        # tsc -b && vite build -> dist/
+npm run preview      # 本番ビルドのプレビュー
+```
+
+`dist/` を任意の静的ホストに配置します。`main` への push で GitHub Actions が起動し、CI は
+push/PR ごとに実行、`deploy.yml` が `dist/` を GitHub Pages に公開します。Vite の `base` は
+`GITHUB_REPOSITORY` から導出し、`VITE_BASE` で上書きできます。
+
+## 開発
 
 ```bash
 npm run dev          # Vite 開発サーバー (HTTPS)
-npm run build        # tsc -b && vite build -> dist/
-npm run preview      # 本番ビルドのプレビュー
-npm test             # Vitest を実行
-npm run test:watch   # Vitest ウォッチモード
+npm run build        # tsc -b && vite build
 npm run typecheck    # tsc -b --force
+npm test             # Vitest
+npm run test:watch   # Vitest ウォッチモード
 npm run lint         # oxlint
 npm run format       # oxfmt . (書き込み)
 npm run format:check # oxfmt --check .
@@ -63,81 +141,32 @@ npm run knip         # 未使用コードの検出
 npm run ci           # lint + format:check + typecheck + test + knip
 ```
 
-## WebAssembly DSP カーネル
-
-負荷の高い DSP 段は `wasm/<name>/` の Rust クレートとして実装し、`wasm32-unknown-unknown`
-にコンパイルします。コンパイル済みの `.wasm` は base64 として `src/dsp/wasm/<name>.bytes.ts`
-にコミットされているため、`build` と `test` に Rust ツールチェーンは不要です。
+DSP のホットパスは `wasm/<name>/` の Rust クレートを WebAssembly にコンパイルしたものです。
+コンパイル済みの `.wasm` は base64 として `src/dsp/wasm/<name>.bytes.ts` にコミットされて
+いるため、`build` と `test` に Rust ツールチェーンは不要です。カーネルを再ビルドするには
+次を実行します。
 
 ```bash
 rustup target add wasm32-unknown-unknown   # 初回のみ
 npm run build:wasm                          # すべて再ビルド -> src/dsp/wasm/*.bytes.ts
 ```
 
-カーネル: `fft`、`ofdm`、`demap`、`resample`、`deinterleave`、`viterbi`、`reed_solomon`。
 TypeScript の参照実装は `src/dsp/stages/` に残してあり、対応する `*.test.ts` で WASM ラッパーと
-比較しています。
+比較しています。テストは happy-dom 環境で、ソースの隣に配置した `*.test.ts` を実行します。
+DSP 層と TS 層はキャプチャをコミットせず合成ビルダーでテストし、実 IQ のテストファイルは
+必要に応じて `tests/fixtures/`（gitignore 対象）から読み込みます。
 
-## アーキテクチャ
+受信チェーン、WebUSB ドライバ、対応パラメータ、ディレクトリ構成、テスト方針は
+[docs/architecture.md](docs/architecture.md) を参照してください。
 
-```text
-IQSource (RTLSDRSource | IQFileSource)
-  │  U8/I8/F32 IQ チャンク（メインスレッド、WebUSB）
-  ▼
-Receiver Worker ─ DSP パイプライン
-  DC 除去 → 64/63 MSps リサンプル → OFDM 同期 → FFT → キャリア抽出
-  → TMCC → チャネル推定・等化 → FEC（デインターリーブ、Viterbi、RS）
-  → MPEG-TS                                                    (Transferable Uint8Array)
-  ▼
-TS Worker ─ デマックス & PSI/SI
-  PAT/PMT/SDT/EIT/NIT/TDT/TOT、統計、種別ごとの PES 分割
-  ▼
-メインスレッド ─ React UI
-  WebCodecs 映像/音声、字幕描画、IndexedDB、メトリクス/スペクトラム
-```
+## ドキュメント
 
-- `src/app/receiverController.ts` が Worker、IQ ソース、プレイヤー、アプリ状態を統括します。
-- `src/iq/IQSource.ts` はハードウェア/ファイルの IQ 境界です。`RTLSDRSource` と `IQFileSource`
-  が実装し、チューナーなしで DSP チェーンの開発・回帰テストを可能にします。
-- `src/dsp/backend.ts` は TS/WASM の差し替え境界です。
-- `src/models/` は純粋なデータモデルと PSI/SI/TMCC の DTO を保持します。
-- `src/workers/protocol.ts` は Worker のメッセージ union を定義します。
-- アプリ状態 (`src/app/store.ts`) は `useSyncExternalStore` を使用します。セレクタは安定した値を
-  返す必要があります。
+`docs/` 以下のファイルは日本語で記述しています。
 
-### ディレクトリ構成
-
-```text
-src/
-├─ app/          SPA 状態、ナビゲーション、受信/スキャンの統括
-├─ components/   汎用 UI (Button, Panel, ProgressBar, …)
-├─ features/     watch / epg / settings / scan / shell 画面
-├─ driver/       rtlsdr/ WebUSB ドライバ (rtl2832u, deviceProfile, tuner/{r82xx,fc0013})
-├─ iq/           IQSource 抽象化、RTLSDRSource、IQFileSource
-├─ dsp/          pipeline、oneSegDecoder、isdbtParams、stages/、wasm/
-├─ ts/           MPEG-TS パケット/記述子/セクション/デマクサ/統計
-├─ media/        WebCodecs 映像/音声デコーダ、A/V 同期、字幕、プレイヤー
-├─ data/         japan/ 地域・送信所・チャンネル・局の JSON、arib/ デコード
-├─ storage/      IndexedDB ラッパー、リポジトリ、localStorage 設定
-├─ workers/      receiver.worker.ts、ts.worker.ts、protocol.ts
-├─ models/       データモデルと DTO
-└─ styles/       デザイントークンとグローバル CSS
-wasm/<name>/     Rust DSP カーネル (Cargo 付き)
-public/          manifest、アイコン、Service Worker
-scripts/         build-wasm.mjs、fetch-channel-data.ts
-```
-
-## テスト
-
-Vitest は happy-dom 環境で動作し、ソースの隣に配置した `*.test.ts` を実行します。DSP 層と TS 層
-はキャプチャをコミットせず、合成ビルダーでテストします。実 IQ のテストファイルは必要に応じて
-`tests/fixtures/`（gitignore 対象）から読み込みます。
-
-## デプロイ
-
-`main` への push で GitHub Actions が起動します。CI は push/PR ごとに実行され、`deploy.yml` が
-アプリをビルドして `dist/` を GitHub Pages に公開します。Vite の `base` は `GITHUB_REPOSITORY`
-から導出し、`VITE_BASE` で上書きできます。
+- [docs/architecture.md](docs/architecture.md): 実行時アーキテクチャ、DSP/FEC パイプライン、
+  WebAssembly カーネル、WebUSB ドライバ、対応パラメータ、ディレクトリ構成、テスト、
+  デプロイ。
+- [README.md](README.md): 英語版 README。
 
 ## 対象範囲と制限
 
