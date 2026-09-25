@@ -10,10 +10,12 @@
 mod deinterleave;
 mod demap;
 mod fft;
+mod frontend;
 mod ofdm;
 mod oneseg;
 mod reed_solomon;
 mod resample;
+mod tmcc;
 mod viterbi;
 
 use core::alloc::Layout;

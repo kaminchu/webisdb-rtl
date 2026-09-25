@@ -25,8 +25,11 @@ DSP hot paths run as WebAssembly kernels in the single `wasm/dsp/` Rust crate. B
 `.wasm` is embedded as base64 in the committed `src/dsp/wasm/dsp.bytes.ts` and loaded once via
 `src/dsp/wasm/dsp.ts`, so every kernel shares one instance/linear memory and `build`/`test` do
 not need Rust. The fused one-seg FEC decoder in `wasm/dsp/src/oneseg.rs` keeps a whole symbol
-batch inside WASM and returns MPEG-TS directly. TypeScript reference implementations remain
-under `src/dsp/stages/` and are compared against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
+batch inside WASM and returns MPEG-TS directly, and the locked-state front end in
+`wasm/dsp/src/frontend.rs` owns the sample buffer, NCO, tracking synchronizer, FFT, TMCC
+decoder (`wasm/dsp/src/tmcc.rs`) and channel estimation so no per-symbol intermediate crosses
+the host. TypeScript reference implementations remain under `src/dsp/stages/` and are compared
+against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
 
 ## Code conventions
 

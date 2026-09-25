@@ -142,11 +142,14 @@ npm run build:wasm                          # 再ビルド -> src/dsp/wasm/dsp.b
 | `deinterleave` | 周波数/時間/ビット/バイトの各デインターリーブ   |
 | `viterbi`      | ストリーミング Viterbi 復号（デパンクチャ含む） |
 | `reed_solomon` | RS(204,188) 誤り訂正                            |
+| `tmcc`         | TMCC 復号（フレーム同期・DSC パリティ）         |
+| `frontend`     | ロック後の NCO/同期/FFT/TMCC/デマップ融合       |
 | `oneseg`       | 上記 FEC 段を融合した one-seg デコーダ          |
 
 `oneseg` は等化後のデータキャリアをまとめて受け取り、時間デインターリーブから TS 組み立て
-までを WASM 内で完結させて MPEG-TS を返します。段ごとのホスト往復と中間コピーを削減する
-ため、`OneSegDecoder` はこの融合カーネルを呼びます。
+までを WASM 内で完結させて MPEG-TS を返します。`frontend` はロック後のサンプルバッファ・NCO・
+トラッキング同期・FFT・TMCC・チャネル推定/等化を保持し、シンボルごとの中間データをホストへ
+戻しません。`OneSegDecoder` と `OneSegPipeline` はこれらの融合カーネルを呼びます。
 
 TypeScript の参照実装は `src/dsp/stages/` に残してあり、対応する
 `src/dsp/wasm/*.test.ts` で WASM ラッパーの出力と比較します。TS/WASM の差し替え境界は

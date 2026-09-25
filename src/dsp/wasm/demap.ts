@@ -64,7 +64,7 @@ type DemodulateFn = (
 
 const segPilotRefCache = new Map<TransmissionMode, Float32Array>()
 
-function segPilotReference(mode: TransmissionMode): Float32Array {
+export function segPilotReference(mode: TransmissionMode): Float32Array {
   const cached = segPilotRefCache.get(mode)
   if (cached) return cached
   const cps = MODE_PARAMS[mode].carriersPerSegment

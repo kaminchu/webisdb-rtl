@@ -94,6 +94,15 @@ export class WasmOneSegDecoder {
     }
   }
 
+  /**
+   * Ensure the input staging buffer can hold `symbolCount` planes. Call this
+   * before taking a view of a shared buffer that must stay valid across the
+   * subsequent decode, since the allocation may grow linear memory.
+   */
+  ensureInput(symbolCount: number): void {
+    this.ensure(symbolCount * this.carriers)
+  }
+
   /** Decode `symbolCount` contiguous data-carrier planes (stride = carriers). */
   decode(re: Float32Array, im: Float32Array, symbolCount: number): Uint8Array {
     if (symbolCount === 0) return new Uint8Array(0)

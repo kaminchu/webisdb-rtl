@@ -23,11 +23,12 @@ import type { IqChunk } from '../iq/IQSource'
 import type { ReceptionQuality } from '../models/reception'
 import type { TmccInfo } from '../models/tmcc'
 import { pilotReferenceAt, type ComplexBins } from './stages/channelEstimation'
-import { TmccDecoder } from './stages/tmcc'
 import { OneSegDecoder } from './oneSegDecoder'
 import { WasmFftBackend } from './wasm/fft'
-import { WasmSymbolDemapper } from './wasm/demap'
+import { segPilotReference } from './wasm/demap'
+import { WasmFrontend } from './wasm/frontend'
 import { WasmOfdmSynchronizer } from './wasm/ofdm'
+import { WasmTmccDecoder } from './wasm/tmcc'
 import { WasmDcRemoval, WasmFractionalResampler, WasmNcoCorrector } from './wasm/resample'
 
 export type PipelineState = 'idle' | 'acquiring' | 'locked' | 'error'
@@ -65,8 +66,6 @@ export interface OneSegPipelineOptions {
 const ACQUIRE_MIN_SAMPLES = 750_000
 const ACQUIRE_MAX_SYMBOLS = 900
 const TMCC_CFO_RANGE = 320
-const TS_BATCH_SYMBOLS = 32
-const MER_INTERVAL = 4
 const DEFAULT_LOCK_STALL_MS = 1500
 
 const CANDIDATES: readonly (readonly [TransmissionMode, number])[] = [
@@ -262,9 +261,6 @@ export class OneSegPipeline {
   private inRe = new Float32Array(0)
   private inIm = new Float32Array(0)
   private bufLen = 0
-  private bufferStart = 0
-  private derotatedUpTo = 0
-  private syncFed = 0
   private lastAcquireLen = 0
   private acqRe = new Float32Array(0)
   private acqIm = new Float32Array(0)
@@ -274,28 +270,13 @@ export class OneSegPipeline {
 
   private mode: TransmissionMode | null = null
   private gi: number | null = null
-  private fftSize = 0
-  private carrierBase = 0
-  private spOffset = 0
-  private frameStartSymbol = 0
   private integerCarrierOffset = 0
   private fractionalOffsetHz: number | null = null
 
-  private nco: WasmNcoCorrector | null = null
-  private sync: WasmOfdmSynchronizer | null = null
-  private demapper: WasmSymbolDemapper | null = null
-  private tmcc: TmccDecoder | null = null
+  private frontend: WasmFrontend | null = null
   private oneSeg: OneSegDecoder | null = null
   private tmccInfo: TmccInfo | null = null
-  private fftRe = new Float32Array(0)
-  private fftIm = new Float32Array(0)
-  private tmccRe = new Float32Array(0)
-  private tmccIm = new Float32Array(0)
-  private pendingRe = new Float32Array(0)
-  private pendingIm = new Float32Array(0)
-  private pendingCount = 0
-  private dataCount = 0
-  private symbolIndex = 0
+  private frontendSymbolBase = 0
   private symbolsProcessed = 0
   private tsBytes = 0
   private lastGammaMag = 0
@@ -353,18 +334,20 @@ export class OneSegPipeline {
 
     this.dc.process(re, im)
     const rs = this.resampler.process(re, im)
-    this.append(rs.re, rs.im)
-    if (this.state === 'idle') this.setState('acquiring')
 
     if (this.state === 'locked') {
-      this.processLocked()
+      this.processLocked(rs.re, rs.im)
       this.checkLockLoss()
-    } else if (
-      this.bufLen >= ACQUIRE_MIN_SAMPLES &&
-      this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
-    ) {
-      this.lastAcquireLen = this.bufLen
-      this.tryAcquire()
+    } else {
+      this.append(rs.re, rs.im)
+      if (this.state === 'idle') this.setState('acquiring')
+      if (
+        this.bufLen >= ACQUIRE_MIN_SAMPLES &&
+        this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
+      ) {
+        this.lastAcquireLen = this.bufLen
+        this.tryAcquire()
+      }
     }
     this.emitStats()
   }
@@ -385,29 +368,19 @@ export class OneSegPipeline {
   }
 
   private releaseLock(): void {
-    this.nco?.dispose()
-    this.sync?.dispose()
-    this.demapper?.dispose()
+    this.frontend?.dispose()
     this.oneSeg?.dispose()
-    this.nco = null
-    this.sync = null
-    this.demapper = null
+    this.frontend = null
     this.oneSeg = null
-    this.tmcc = null
     this.tmccInfo = null
-    this.pendingCount = 0
     this.mode = null
     this.gi = null
     this.integerCarrierOffset = 0
     this.fractionalOffsetHz = null
-    this.frameStartSymbol = 0
-    this.symbolIndex = 0
-    // Buffered samples were rotated by the locked NCO; discard them so the new
-    // acquisition applies its own frequency correction to fresh samples.
+    this.frontendSymbolBase = 0
+    // Buffered samples were consumed by the locked front end; discard them so the
+    // new acquisition applies its own frequency correction to fresh samples.
     this.bufLen = 0
-    this.bufferStart = 0
-    this.derotatedUpTo = 0
-    this.syncFed = 0
     this.lastAcquireLen = 0
     this.setState('acquiring')
   }
@@ -421,8 +394,8 @@ export class OneSegPipeline {
       }
     }
     if (this.state === 'locked') {
-      this.processLocked()
-      this.flushTs()
+      this.applyFrontendStats()
+      this.drainFrontend()
     }
     this.emitStats()
   }
@@ -430,29 +403,19 @@ export class OneSegPipeline {
   /** Drop buffered samples and reset all DSP state. */
   discardBuffer(): void {
     this.bufLen = 0
-    this.bufferStart = 0
-    this.derotatedUpTo = 0
-    this.syncFed = 0
     this.lastAcquireLen = 0
     this.dc.reset()
     this.resampler.reset()
-    this.nco?.dispose()
-    this.sync?.dispose()
-    this.demapper?.dispose()
+    this.frontend?.dispose()
     this.oneSeg?.dispose()
-    this.nco = null
-    this.sync = null
-    this.demapper = null
-    this.tmcc = null
+    this.frontend = null
     this.oneSeg = null
     this.tmccInfo = null
-    this.pendingCount = 0
     this.mode = null
     this.gi = null
     this.integerCarrierOffset = 0
     this.fractionalOffsetHz = null
-    this.frameStartSymbol = 0
-    this.symbolIndex = 0
+    this.frontendSymbolBase = 0
     this.lastProgressAt = this.clock()
     this.lastProgressTsBytes = this.tsBytes
     this.setState('idle')
@@ -513,7 +476,6 @@ export class OneSegPipeline {
           if (result !== null) {
             const spOffset = estimateSpPhase(planes, mode, m)
             this.applyLock(mode, gi, m, fFrac, n, spOffset, result.info, result.frameStart)
-            this.processLocked()
             return true
           }
         }
@@ -575,7 +537,7 @@ export class OneSegPipeline {
   ): { info: TmccInfo; frameStart: number } | null {
     const half = MODE_PARAMS[mode].oneSegFftSize >> 1
     const tmcc = tmccCarriersFor(mode)
-    const dec = new TmccDecoder(mode, gi)
+    const dec = new WasmTmccDecoder(mode, gi)
     const tr = new Float32Array(tmcc.length)
     const ti = new Float32Array(tmcc.length)
     let info = dec.push(tr, ti)
@@ -596,6 +558,8 @@ export class OneSegPipeline {
       info = dec.push(tr, ti)
     }
     const layer = info.layers.A
+    const frameStart = dec.frameStartSymbol
+    dec.dispose()
     if (
       !info.locked ||
       !info.partialReception ||
@@ -606,7 +570,7 @@ export class OneSegPipeline {
       layer.timeInterleave > 3
     )
       return null
-    return { info, frameStart: Math.max(0, dec.frameStartSymbol - 1) }
+    return { info, frameStart: Math.max(0, frameStart - 1) }
   }
 
   private applyLock(
@@ -621,157 +585,73 @@ export class OneSegPipeline {
   ): void {
     this.mode = mode
     this.gi = gi
-    this.fftSize = n
     this.integerCarrierOffset = m
-    this.carrierBase = m
-    this.spOffset = spOffset
-    this.frameStartSymbol = frameStart
     this.fractionalOffsetHz = fFrac
-    this.nco = new WasmNcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
-    this.sync = new WasmOfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ, true)
-    this.demapper = new WasmSymbolDemapper(
-      mode,
-      [0, 1, 2, 3].map((phase) => dataCarriersFor(mode, phase)),
-      1,
-    )
-    this.tmcc = new TmccDecoder(mode, gi)
-    this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
     this.tmccInfo = info
-    this.dataCount = MODE_PARAMS[mode].dataCarriersPerSegment
-    this.pendingRe = new Float32Array(TS_BATCH_SYMBOLS * this.dataCount)
-    this.pendingIm = new Float32Array(TS_BATCH_SYMBOLS * this.dataCount)
-    this.fftRe = new Float32Array(n)
-    this.fftIm = new Float32Array(n)
-    const tmccLength = tmccCarriersFor(mode).length
-    this.tmccRe = new Float32Array(tmccLength)
-    this.tmccIm = new Float32Array(tmccLength)
-    this.pendingCount = 0
-    this.symbolIndex = 0
-    this.derotatedUpTo = 0
-    this.syncFed = 0
+    this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
+    this.frontend = new WasmFrontend({
+      mode,
+      fftSize: n,
+      gi,
+      sampleRate: ONESEG_SAMPLING_HZ,
+      carrierBase: m,
+      fractionalOffsetHz: fFrac,
+      spOffset,
+      frameStartSymbol: frameStart,
+      carriersPerSegment: MODE_PARAMS[mode].carriersPerSegment,
+      dataCount: MODE_PARAMS[mode].dataCarriersPerSegment,
+      segRef: segPilotReference(mode),
+      dataIndices: [0, 1, 2, 3].map((phase) => dataCarriersFor(mode, phase)),
+      tmccCarriers: tmccCarriersFor(mode),
+    })
+    this.frontendSymbolBase = this.symbolsProcessed
     this.lastProgressAt = this.clock()
     this.lastProgressTsBytes = this.tsBytes
     this.callbacks.onTmcc?.(info)
     this.setState('locked')
+    // Feed samples buffered during acquisition (not yet derotated).
+    this.processLocked(this.bufRe.subarray(0, this.bufLen), this.bufIm.subarray(0, this.bufLen))
+    this.bufLen = 0
   }
 
-  private processLocked(): void {
-    const nco = this.nco
-    const sync = this.sync
-    if (!nco || !sync) return
-    if (this.derotatedUpTo < this.bufLen) {
-      nco.process(
-        this.bufRe.subarray(this.derotatedUpTo, this.bufLen),
-        this.bufIm.subarray(this.derotatedUpTo, this.bufLen),
-      )
-      this.derotatedUpTo = this.bufLen
-    }
-    if (this.syncFed < this.bufLen) {
-      const res = sync.process(
-        this.bufRe.subarray(this.syncFed, this.bufLen),
-        this.bufIm.subarray(this.syncFed, this.bufLen),
-      )
-      this.syncFed = this.bufLen
-      this.lastGammaMag = res.gammaMagnitude
-      this.lastPhi = res.phi
-      for (const start of res.symbolStarts) this.processSymbol(start)
-      const drop = Math.max(0, this.bufLen - 2 * this.fftSize)
-      this.bufRe.copyWithin(0, drop, this.bufLen)
-      this.bufIm.copyWithin(0, drop, this.bufLen)
-      this.bufLen -= drop
-      this.bufferStart += drop
-      this.derotatedUpTo -= drop
-      this.syncFed -= drop
-    }
+  private processLocked(re: Float32Array, im: Float32Array): void {
+    const frontend = this.frontend
+    if (!frontend) return
+    frontend.push(re, im)
+    this.applyFrontendStats()
+    this.drainFrontend()
   }
 
-  private processSymbol(start: number): void {
-    start -= this.bufferStart
-    const mode = this.mode
-    const n = this.fftSize
-    if (mode === null || start + n > this.bufLen) return
-    const fRe = this.fftRe
-    const fIm = this.fftIm
-    this.fft.forwardFrom(this.bufRe, this.bufIm, start, n, fRe, fIm)
-    this.symbolsProcessed++
-
-    const tmccC = tmccCarriersFor(mode)
-    const tr = this.tmccRe
-    const ti = this.tmccIm
-    // Integer CFO rotates successive symbols by 2π * offset * GI / FFT size.
-    const angle =
-      (-2 *
-        Math.PI *
-        (this.carrierBase + MODE_PARAMS[mode].carriersPerSegment / 2) *
-        this.symbolIndex) /
-      this.gi!
-    const cos = Math.cos(angle)
-    const sin = Math.sin(angle)
-    for (let c = 0; c < tmccC.length; c++) {
-      const bin = (((this.carrierBase + tmccC[c]) % n) + n) % n
-      const re = fRe[bin]
-      const im = fIm[bin]
-      tr[c] = re * cos - im * sin
-      ti[c] = re * sin + im * cos
-    }
-    const info = this.tmcc?.push(tr, ti) ?? null
-    if (info !== null && info !== this.tmccInfo) {
+  /** Pull sync quality, MER and TMCC updates out of the fused front end. */
+  private applyFrontendStats(): void {
+    const frontend = this.frontend
+    if (!frontend) return
+    const stats = frontend.stats()
+    this.lastGammaMag = stats.gammaMagnitude
+    this.lastPhi = stats.phi
+    this.lastSignalPower = stats.signalPower
+    this.lastMerDb = stats.merDb
+    this.symbolsProcessed = this.frontendSymbolBase + stats.symbolsProcessed
+    const info = frontend.tmccInfo()
+    if (info !== this.tmccInfo) {
       this.tmccInfo = info
       this.callbacks.onTmcc?.(info)
     }
-
-    if (this.oneSeg !== null && this.symbolIndex >= this.frameStartSymbol) {
-      const spPhase = (this.symbolIndex + this.spOffset) % 4
-      const offset = this.pendingCount * this.dataCount
-      this.demapper!.process(
-        fRe,
-        fIm,
-        n,
-        this.carrierBase,
-        spPhase,
-        spPhase,
-        this.pendingRe,
-        this.pendingIm,
-        offset,
-      )
-      if (this.symbolIndex % MER_INTERVAL === 0) {
-        this.updateMer(this.pendingRe, this.pendingIm, offset, this.dataCount)
-      }
-      this.pendingCount++
-      if (this.pendingCount >= TS_BATCH_SYMBOLS) this.flushTs()
-    }
-    this.symbolIndex++
   }
 
-  private updateMer(re: Float32Array, im: Float32Array, offset: number, count: number): void {
-    let power = 0
-    for (let i = 0; i < count; i++) {
-      const r = re[offset + i]
-      const q = im[offset + i]
-      power += r * r + q * q
+  /** Decode the equalized planes the front end accumulated into MPEG-TS. */
+  private drainFrontend(): void {
+    const frontend = this.frontend
+    if (!frontend) return
+    const count = frontend.pendingCount()
+    if (count === 0) return
+    if (this.oneSeg === null) {
+      frontend.clearPending()
+      return
     }
-    power /= count
-    this.lastSignalPower = power
-    const scale = Math.sqrt(power / 2)
-    let err = 0
-    for (let i = 0; i < count; i++) {
-      const r = re[offset + i]
-      const q = im[offset + i]
-      const idealRe = r >= 0 ? scale : -scale
-      const idealIm = q >= 0 ? scale : -scale
-      const dr = r - idealRe
-      const di = q - idealIm
-      err += dr * dr + di * di
-    }
-    err /= count
-    this.lastMerDb = power > 0 && err > 0 ? 10 * Math.log10(power / err) : null
-  }
-
-  private flushTs(): void {
-    if (this.oneSeg === null || this.pendingCount === 0) return
-    const count = this.pendingCount
-    this.pendingCount = 0
-    const out = this.oneSeg.decodeContiguous(this.pendingRe, this.pendingIm, count)
+    this.oneSeg.prepareDecode(count)
+    const out = this.oneSeg.decodeContiguous(frontend.pendingRe(), frontend.pendingIm(), count)
+    frontend.clearPending()
     if (out.length > 0) {
       this.tsBytes += out.length
       this.callbacks.onTs?.(out)

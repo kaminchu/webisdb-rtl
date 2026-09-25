@@ -89,6 +89,14 @@ export class OneSegDecoder {
   }
 
   /**
+   * Reserve input staging for `symbolCount` planes before the caller takes a
+   * view over shared WASM memory (the allocation may grow linear memory).
+   */
+  prepareDecode(symbolCount: number): void {
+    this.decoder.ensureInput(symbolCount)
+  }
+
+  /**
    * Decode a batch already laid out contiguously as `symbolCount` planes of
    * `carriersPerSymbol` complex values each, avoiding the per-plane repacking.
    */
