@@ -53,13 +53,6 @@
   color: var(--color-text-muted);
 }
 
-.connectError {
-  margin: var(--space-2) 0 0;
-  max-width: 40ch;
-  font-size: 12px;
-  color: var(--color-bad);
-}
-
 .overlay {
   position: absolute;
   inset: 0;
@@ -111,16 +104,4 @@
 .dockedGuide > * {
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.errorLine {
-  position: absolute;
-  left: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 7;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-  background: rgb(255 92 108 / 20%);
-  color: var(--color-bad);
-  font-size: 11px;
 }

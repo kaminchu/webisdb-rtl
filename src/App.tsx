@@ -3,6 +3,7 @@ import { store, useStore, Screen } from './app/store'
 import { navigate, startHashNavigation } from './app/navigation'
 import { receiverController } from './app/receiverController'
 import { AppSidebar } from './features/shell/AppSidebar'
+import { ErrorToaster } from './components/ErrorToaster'
 import styles from './App.module.css'
 import { WatchScreen } from './features/watch/WatchScreen'
 import { EpgScreen } from './features/epg/EpgScreen'
@@ -42,6 +43,7 @@ export function App() {
       <main className={styles.main}>
         <CurrentScreen screen={screen} />
       </main>
+      <ErrorToaster />
     </div>
   )
 }

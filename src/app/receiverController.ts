@@ -16,6 +16,7 @@ import type {
   TsEvent,
 } from '../workers/protocol'
 import { createEmptyDiagnostics, store } from './store'
+import { reportError } from './notifications'
 import { loadSettings, saveSettings } from '../storage/settings'
 import { receivedServices } from './serviceInfo'
 
@@ -59,7 +60,7 @@ export class ReceiverController {
       this.#receiverWorker.onmessage = (event: MessageEvent<ReceiverEvent>) => {
         if (this.#receiverWorker === worker) this.#handleReceiverEvent(event.data)
       }
-      this.#receiverWorker.onerror = (event) => this.#fail(event.message)
+      this.#receiverWorker.onerror = (event) => this.#fail(event.error ?? event.message)
     }
     if (!this.#tsWorker) {
       this.#tsWorker = new Worker(new URL('../workers/ts.worker.ts', import.meta.url), {
@@ -69,7 +70,7 @@ export class ReceiverController {
       this.#tsWorker.onmessage = (event: MessageEvent<TsEvent>) => {
         if (this.#tsWorker === worker) this.#handleTsEvent(event.data)
       }
-      this.#tsWorker.onerror = (event) => this.#fail(event.message)
+      this.#tsWorker.onerror = (event) => this.#fail(event.error ?? event.message)
     }
     return { receiver: this.#receiverWorker, ts: this.#tsWorker }
   }
@@ -236,7 +237,7 @@ export class ReceiverController {
 
   start(): void {
     this.#postReceiver({ type: 'start' })
-    void this.#source?.start().catch((error: unknown) => this.#fail(String(error)))
+    void this.#source?.start().catch((error: unknown) => this.#fail(error))
     this.#started = true
   }
 
@@ -298,7 +299,7 @@ export class ReceiverController {
         this.#postTs({ type: 'input', data: event.data }, [event.data.buffer])
         break
       case 'error':
-        this.#fail(event.error.message)
+        this.#fail(event.error)
         break
       default:
         break
@@ -367,14 +368,16 @@ export class ReceiverController {
         break
       }
       case 'error':
-        this.#fail(event.error.message)
+        this.#fail(event.error)
         break
       default:
         break
     }
   }
 
-  #fail(message: string): void {
+  #fail(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error)
+    reportError('receiver', error)
     store.setState((prev) => ({ receiver: { ...prev.receiver, state: 'error', error: message } }))
   }
 }

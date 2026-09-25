@@ -59,6 +59,17 @@ export interface SpectrumSlice {
   centerFrequency: number
 }
 
+export interface AppNotification {
+  id: number
+  /** Source label, e.g. `video` / `audio` / `receiver`. */
+  context: string
+  message: string
+  /** Times the same error repeated, to avoid flooding the list. */
+  count: number
+  /** Timestamp of the latest occurrence, used to restart auto-dismiss. */
+  at: number
+}
+
 export interface AppState {
   screen: Screen
   sidebarOpen: boolean
@@ -67,7 +78,7 @@ export interface AppState {
   receiver: ReceiverSlice
   diagnostics: DiagnosticsSlice
   spectrum: SpectrumSlice
-  toast: string | null
+  notifications: AppNotification[]
 }
 
 export function createEmptyDiagnostics(): DiagnosticsSlice {
@@ -111,7 +122,7 @@ export function createInitialState(): AppState {
     },
     diagnostics: createEmptyDiagnostics(),
     spectrum: { bins: null, binHz: 0, centerFrequency: 0 },
-    toast: null,
+    notifications: [],
   }
 }
 

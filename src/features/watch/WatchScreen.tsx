@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { openSidebar } from '../../app/navigation'
+import { reportError } from '../../app/notifications'
 import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import { OneSegPlayer } from '../../media'
@@ -17,8 +18,6 @@ export function WatchScreen() {
   const playerRef = useRef<OneSegPlayer | null>(null)
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [connecting, setConnecting] = useState(false)
-  const [playerError, setPlayerError] = useState<string | null>(null)
-  const [connectError, setConnectError] = useState<string | null>(null)
   const [audioChannel, setAudioChannel] = useState<AudioChannelMode>(
     () => loadSettings().ui.audioChannel,
   )
@@ -33,7 +32,7 @@ export function WatchScreen() {
     if (!canvas) return
     const settings = loadSettings()
     const player = new OneSegPlayer(canvas, {
-      onError: (error) => setPlayerError(error.message),
+      onError: (error) => reportError('player', error),
       bufferSec: settings.bufferSeconds,
     })
     playerRef.current = player
@@ -52,11 +51,10 @@ export function WatchScreen() {
   const connect = async () => {
     if (connecting) return
     setConnecting(true)
-    setConnectError(null)
     try {
       await receiverController.connectRtlSdr()
     } catch (cause) {
-      setConnectError(cause instanceof Error ? cause.message : String(cause))
+      reportError('connect', cause)
     } finally {
       setConnecting(false)
     }
@@ -96,12 +94,7 @@ export function WatchScreen() {
       onKeyDown={() => playerRef.current?.resume()}
     >
       <div className={styles.stage} onClick={onStageClick}>
-        <PlayerView
-          canvasRef={canvasRef}
-          connected={connected}
-          connecting={connecting}
-          connectError={connectError}
-        />
+        <PlayerView canvasRef={canvasRef} connected={connected} connecting={connecting} />
 
         {showDebug && <DebugOverlay />}
 
@@ -141,8 +134,6 @@ export function WatchScreen() {
             )}
           </div>
         )}
-
-        {playerError && <div className={styles.errorLine}>デコードエラー: {playerError}</div>}
       </div>
 
       {docked && (
