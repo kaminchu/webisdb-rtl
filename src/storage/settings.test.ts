@@ -33,16 +33,11 @@ describe('settings', () => {
   })
 
   it('merges nested ui and debug without dropping sibling fields', () => {
-    saveSettings({ debug: { overlayBuffer: true } })
+    saveSettings({ debug: { showOverlay: true } })
     saveSettings({ ui: { theme: 'dark' } })
-    const settings = saveSettings({ debug: { overlayQuality: true } })
-    expect(settings.debug).toEqual({
-      showOverlay: false,
-      overlayBuffer: true,
-      overlayQuality: true,
-      overlaySpectrum: false,
-    })
-    expect(settings.ui).toEqual({ theme: 'dark', subtitles: false, audioChannel: 'stereo' })
+    const settings = saveSettings({ ui: { subtitles: true } })
+    expect(settings.debug).toEqual({ showOverlay: true })
+    expect(settings.ui).toEqual({ theme: 'dark', subtitles: true, audioChannel: 'stereo' })
   })
 
   it('persists subtitle, audio channel, and debug overlay preferences', () => {

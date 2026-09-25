@@ -23,11 +23,6 @@ export function SettingsScreen() {
   const [gainInput, setGainInput] = useState(() => String(loadSettings().gainDb ?? 19.7))
   const [rate, setRate] = useState(() => loadSettings().sampleRate ?? sampleRate)
   const [bufferInput, setBufferInput] = useState(() => String(loadSettings().bufferSeconds))
-  const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
-  const [showOverlay, setShowOverlay] = useState(() => loadSettings().debug.showOverlay)
-  const [overlayBuffer, setOverlayBuffer] = useState(() => loadSettings().debug.overlayBuffer)
-  const [overlayQuality, setOverlayQuality] = useState(() => loadSettings().debug.overlayQuality)
-  const [overlaySpectrum, setOverlaySpectrum] = useState(() => loadSettings().debug.overlaySpectrum)
 
   const applyGain = () => {
     const value = Number.parseFloat(gainInput)
@@ -53,37 +48,6 @@ export function SettingsScreen() {
     saveSettings({ bufferSeconds: Math.min(value, MAX_BUFFER_SECONDS) })
   }
 
-  const toggleSubtitles = () => {
-    const next = !subtitles
-    setSubtitles(next)
-    saveSettings({ ui: { subtitles: next } })
-  }
-
-  const toggleOverlay = () => {
-    const next = !showOverlay
-    setShowOverlay(next)
-    saveSettings({ debug: { showOverlay: next } })
-  }
-
-  const toggleOverlayBuffer = () => {
-    const next = !overlayBuffer
-    setOverlayBuffer(next)
-    saveSettings({ debug: { overlayBuffer: next } })
-  }
-
-  const toggleOverlayQuality = () => {
-    const next = !overlayQuality
-    setOverlayQuality(next)
-    saveSettings({ debug: { overlayQuality: next } })
-  }
-
-  const toggleOverlaySpectrum = () => {
-    const next = !overlaySpectrum
-    setOverlaySpectrum(next)
-    saveSettings({ debug: { overlaySpectrum: next } })
-    receiverController.setSpectrumEnabled(next)
-  }
-
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
@@ -95,48 +59,6 @@ export function SettingsScreen() {
         <div className={styles.wide}>
           <ChannelSettings />
         </div>
-
-        <Panel title="表示設定">
-          <div className={styles.stack}>
-            <label className={styles.toggle}>
-              <input type="checkbox" checked={subtitles} onChange={toggleSubtitles} />
-              字幕を表示する（全体設定）
-            </label>
-            <label className={styles.toggle}>
-              <input type="checkbox" checked={showOverlay} onChange={toggleOverlay} />
-              デバッグ情報を視聴画面にオーバーレイする
-            </label>
-            <div className={styles.nested}>
-              <label className={styles.toggle}>
-                <input
-                  type="checkbox"
-                  checked={overlayBuffer}
-                  disabled={!showOverlay}
-                  onChange={toggleOverlayBuffer}
-                />
-                バッファ
-              </label>
-              <label className={styles.toggle}>
-                <input
-                  type="checkbox"
-                  checked={overlayQuality}
-                  disabled={!showOverlay}
-                  onChange={toggleOverlayQuality}
-                />
-                受信品質
-              </label>
-              <label className={styles.toggle}>
-                <input
-                  type="checkbox"
-                  checked={overlaySpectrum}
-                  disabled={!showOverlay}
-                  onChange={toggleOverlaySpectrum}
-                />
-                スペクトラム
-              </label>
-            </div>
-          </div>
-        </Panel>
 
         <Panel title="再生設定">
           <div className={styles.stack}>

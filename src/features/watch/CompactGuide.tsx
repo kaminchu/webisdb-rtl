@@ -1,18 +1,13 @@
 import { useStore } from '../../app/store'
 import { formatJstTime } from '../epg/time'
 import { useEpg } from '../epg/useEpg'
-import type { ChannelGuideEntry } from '../epg/useEpg'
 import styles from './CompactGuide.module.css'
 
 const PX_PER_MINUTE = 6
 const LABEL_WIDTH = 104
 const TICK_MINUTES = 30
 
-export interface CompactGuideProps {
-  onProgramSelect?: () => void
-}
-
-export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
+export function CompactGuide() {
   const { guide, selectChannel } = useEpg(2)
   const currentChannel = useStore((s) => s.receiver.channel)
 
@@ -30,11 +25,6 @@ export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
       left: ((time - rangeStart) / 60_000) * PX_PER_MINUTE,
       label: formatJstTime(time),
     })
-  }
-
-  const select = (entry: ChannelGuideEntry) => {
-    selectChannel(entry)
-    onProgramSelect?.()
   }
 
   if (guide.entries.length === 0) {
@@ -64,7 +54,7 @@ export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
                 type="button"
                 className={active ? styles.labelActive : styles.label}
                 style={{ width: LABEL_WIDTH }}
-                onClick={() => select(entry)}
+                onClick={() => selectChannel(entry)}
               >
                 <span className={styles.labelChannel}>ch {entry.physicalChannel}</span>
                 <span className={styles.labelName}>{entry.serviceName}</span>
@@ -87,7 +77,7 @@ export function CompactGuide({ onProgramSelect }: CompactGuideProps) {
                           .join(' ')}
                         style={{ left, width }}
                         title={`${formatJstTime(start)} ${event.title}`}
-                        onClick={() => select(entry)}
+                        onClick={() => selectChannel(entry)}
                       >
                         <span className={styles.programTitle}>
                           {event.title || '（タイトルなし）'}

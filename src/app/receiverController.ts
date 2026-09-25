@@ -7,7 +7,7 @@ import type { IQSource } from '../iq/IQSource'
 import { RTLSDRSource } from '../iq/RTLSDRSource'
 import { findAuthorizedRtlSdrDevice, requestRtlSdrDevice } from '../driver/rtlsdr/usbTransport'
 import type { UsbTransport, WebUsbTransport } from '../driver/rtlsdr/usbTransport'
-import type { OneSegPlayer } from '../media/player'
+import type { OneSegPlayer, PlayerStats } from '../media/player'
 import type {
   IqChunkInit,
   ReceiverCommand,
@@ -41,6 +41,11 @@ export class ReceiverController {
 
   setPlayer(player: OneSegPlayer | null): void {
     this.#player = player
+  }
+
+  /** Latest decoder statistics, or null while no player is attached. */
+  get playerStats(): PlayerStats | null {
+    return this.#player?.stats ?? null
   }
 
   // --- lifecycle -----------------------------------------------------------
@@ -121,7 +126,7 @@ export class ReceiverController {
         sampleRate: source.descriptor.sampleRate,
         gainDb: settings.gainDb ?? DEFAULT_GAIN,
         ppm: 0,
-        spectrumEnabled: true,
+        spectrumEnabled: false,
       },
     })
     await source.start()
@@ -219,7 +224,7 @@ export class ReceiverController {
           sampleRate: source.descriptor.sampleRate,
           gainDb: receiver.gainDb ?? 'auto',
           ppm: receiver.ppm,
-          spectrumEnabled: true,
+          spectrumEnabled: false,
         },
       })
       if (restart) await source.start()

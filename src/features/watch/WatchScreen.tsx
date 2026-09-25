@@ -23,7 +23,7 @@ export function WatchScreen() {
     () => loadSettings().ui.audioChannel,
   )
   const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
-  const [debugPrefs] = useState(() => loadSettings().debug)
+  const [showDebug, setShowDebug] = useState(() => loadSettings().debug.showOverlay)
   const docked = useDockedGuide()
 
   const sourceKind = useStore((s) => s.receiver.sourceKind)
@@ -83,6 +83,12 @@ export function WatchScreen() {
     playerRef.current?.setSubtitlesEnabled(next)
   }
 
+  const toggleDebug = () => {
+    const next = !showDebug
+    setShowDebug(next)
+    saveSettings({ debug: { showOverlay: next } })
+  }
+
   return (
     <div
       className={styles.root}
@@ -96,6 +102,8 @@ export function WatchScreen() {
           connecting={connecting}
           connectError={connectError}
         />
+
+        {showDebug && <DebugOverlay />}
 
         {overlayOpen && (
           <div
@@ -120,23 +128,15 @@ export function WatchScreen() {
             <WatchControls
               audioChannel={audioChannel}
               subtitles={subtitles}
+              debugOverlay={showDebug}
               onAudioChange={changeAudio}
               onToggleSubtitles={toggleSubtitles}
+              onToggleDebugOverlay={toggleDebug}
             />
-
-            {debugPrefs.showOverlay && (
-              <div className={styles.debugLayer} onClick={(event) => event.stopPropagation()}>
-                <DebugOverlay
-                  buffer={debugPrefs.overlayBuffer}
-                  quality={debugPrefs.overlayQuality}
-                  spectrum={debugPrefs.overlaySpectrum}
-                />
-              </div>
-            )}
 
             {!docked && (
               <div className={styles.guideLayer} onClick={(event) => event.stopPropagation()}>
-                <CompactGuide onProgramSelect={() => setOverlayOpen(false)} />
+                <CompactGuide />
               </div>
             )}
           </div>

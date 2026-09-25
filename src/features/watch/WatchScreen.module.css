@@ -101,22 +101,6 @@
   max-height: 100%;
 }
 
-.debugLayer {
-  position: absolute;
-  top: 64px;
-  left: var(--space-3);
-  right: 132px;
-  max-height: 60%;
-  overflow: auto;
-  z-index: 6;
-}
-
-.statsLine {
-  margin: var(--space-1) 0 0;
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-
 .dockedGuide {
   flex: none;
   display: flex;

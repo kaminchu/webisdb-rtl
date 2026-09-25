@@ -10,15 +10,19 @@ const AUDIO_MODES: { mode: AudioChannelMode; label: string }[] = [
 export interface WatchControlsProps {
   audioChannel: AudioChannelMode
   subtitles: boolean
+  debugOverlay: boolean
   onAudioChange(mode: AudioChannelMode): void
   onToggleSubtitles(): void
+  onToggleDebugOverlay(): void
 }
 
 export function WatchControls({
   audioChannel,
   subtitles,
+  debugOverlay,
   onAudioChange,
   onToggleSubtitles,
+  onToggleDebugOverlay,
 }: WatchControlsProps) {
   return (
     <div className={styles.controls} onClick={(event) => event.stopPropagation()}>
@@ -46,6 +50,17 @@ export function WatchControls({
           onClick={onToggleSubtitles}
         >
           {subtitles ? '表示する' : '表示しない'}
+        </button>
+      </div>
+      <div className={styles.group}>
+        <span className={styles.caption}>デバッグ</span>
+        <button
+          type="button"
+          className={debugOverlay ? styles.optionActive : styles.option}
+          aria-pressed={debugOverlay}
+          onClick={onToggleDebugOverlay}
+        >
+          {debugOverlay ? '表示する' : '表示しない'}
         </button>
       </div>
     </div>

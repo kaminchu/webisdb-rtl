@@ -17,12 +17,7 @@ export interface AppSettings {
   /** Playback jitter buffer depth in seconds; media is presented this far behind live. */
   bufferSeconds: number
   ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
-  debug: {
-    showOverlay: boolean
-    overlayBuffer: boolean
-    overlayQuality: boolean
-    overlaySpectrum: boolean
-  }
+  debug: { showOverlay: boolean }
 }
 
 /** Deep-partial patch accepted by `saveSettings`; nested `ui`/`debug` merge field-wise. */
@@ -44,12 +39,7 @@ export function defaultSettings(): AppSettings {
     sampleRate: null,
     bufferSeconds: DEFAULT_BUFFER_SECONDS,
     ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
-    debug: {
-      showOverlay: false,
-      overlayBuffer: false,
-      overlayQuality: false,
-      overlaySpectrum: false,
-    },
+    debug: { showOverlay: false },
   }
 }
 
@@ -127,12 +117,7 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
       subtitles: asBoolean(ui.subtitles, base.ui.subtitles),
       audioChannel: audioChannel ?? base.ui.audioChannel,
     },
-    debug: {
-      showOverlay: asBoolean(debug.showOverlay, base.debug.showOverlay),
-      overlayBuffer: asBoolean(debug.overlayBuffer, base.debug.overlayBuffer),
-      overlayQuality: asBoolean(debug.overlayQuality, base.debug.overlayQuality),
-      overlaySpectrum: asBoolean(debug.overlaySpectrum, base.debug.overlaySpectrum),
-    },
+    debug: { showOverlay: asBoolean(debug.showOverlay, base.debug.showOverlay) },
   }
 }
 
