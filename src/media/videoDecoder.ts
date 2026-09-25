@@ -172,17 +172,21 @@ export class VideoStreamDecoder {
     this.config = null
   }
 
-  private recreate(): void {
+  private recreate(): boolean {
     this.closeDecoder()
-    if (!this.supported || !this.config) return
+    if (!this.supported || !this.config) return false
     try {
       this.decoder = new VideoDecoder({
         output: (frame) => this.emitFrame(frame),
         error: (error) => this.handleError(error),
       })
       this.decoder.configure(this.config)
+      return true
     } catch (error) {
-      this.handleError(error)
+      // A rejected configuration is permanent: retrying it forever would spin.
+      this.decoder = null
+      this.reportError(error)
+      return false
     }
   }
 

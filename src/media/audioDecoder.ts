@@ -158,17 +158,21 @@ export class AudioStreamDecoder {
     if (this.ownedContext && this.context) void this.context.close()
   }
 
-  private recreate(): void {
+  private recreate(): boolean {
     this.closeDecoder()
-    if (!this.supported || !this.config) return
+    if (!this.supported || !this.config) return false
     try {
       this.decoder = new AudioDecoder({
         output: (data) => this.onAudioData(data),
         error: (error) => this.handleError(error),
       })
       this.decoder.configure(this.config)
+      return true
     } catch (error) {
-      this.handleError(error)
+      // A rejected configuration is permanent: retrying it forever would spin.
+      this.decoder = null
+      this.reportError(error)
+      return false
     }
   }
 
@@ -266,6 +270,11 @@ export class AudioStreamDecoder {
   private handleError(error: unknown): void {
     this.reportError(error)
     if (this.supported && this.config) this.recreate()
+  }
+
+  /** True while a decoder instance exists, even if it rejects samples later. */
+  get configuredDecoder(): boolean {
+    return this.decoder !== null
   }
 
   private reportError(error: unknown): void {

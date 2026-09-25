@@ -47,6 +47,14 @@ function isCanvasElement(
   return typeof (element as HTMLCanvasElement).getContext === 'function'
 }
 
+function audioConfigMatches(a: AudioDecoderConfigInput, b: AudioDecoderConfigInput): boolean {
+  return (
+    a.codec === b.codec &&
+    a.sampleRate === b.sampleRate &&
+    a.numberOfChannels === b.numberOfChannels
+  )
+}
+
 /**
  * Ties demuxed PES packets to WebCodecs decoders and the A/V sync clock.
  *
@@ -176,17 +184,20 @@ export class OneSegPlayer {
       this.counters.audioSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
       for (const frame of this.adts.push(packet.data, pts90kToMicros(packet.pts ?? 0))) {
-        if (
-          !this.audioConfig ||
-          this.audioConfig.sampleRate !== frame.sampleRate ||
-          this.audioConfig.numberOfChannels !== frame.numberOfChannels ||
-          this.audioConfig.codec !== frame.codec
-        ) {
-          this.configureAudio({
-            codec: frame.codec,
-            sampleRate: frame.sampleRate,
-            numberOfChannels: frame.numberOfChannels,
-          })
+        const next: AudioDecoderConfigInput = {
+          codec: frame.codec,
+          sampleRate: frame.sampleRate,
+          numberOfChannels: frame.numberOfChannels,
+        }
+        if (this.audioConfig && !audioConfigMatches(this.audioConfig, next)) {
+          if (!this.audioDecoder.configuredDecoder) {
+            // The previous config was rejected; do not retry it on every frame.
+            this.audioConfig = next
+          } else {
+            this.configureAudio(next)
+          }
+        } else if (!this.audioConfig) {
+          this.configureAudio(next)
         }
         this.audioDecoder.pushSample(frame.data, frame.timestamp)
       }
