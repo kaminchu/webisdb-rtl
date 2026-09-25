@@ -94,10 +94,10 @@ export class WasmDcRemoval {
 }
 
 /**
- * Fused U8 unpack + DC removal + integer decimation.
+ * Fused U8 unpack + anti-alias FIR + DC removal + integer decimation.
  *
  * Input bytes are staged in WASM and only the kept complex samples are read
- * back, so the decimated-away samples never cross the host boundary.
+ * back. FIR history stays in WASM across chunks.
  */
 export class WasmU8Decimator {
   private readonly ptr: number

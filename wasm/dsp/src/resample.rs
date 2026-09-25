@@ -335,28 +335,53 @@ pub extern "C" fn resample_out_im(ptr: *const FractionalResampler) -> *const f32
 
 /// Fused U8 IQ unpack, DC removal and integer decimation.
 ///
-/// Reads interleaved unsigned-8 IQ, keeps every `factor`-th complex sample,
-/// normalises it to +/-1, removes the running-mean DC offset and returns the
-/// decimated complex stream. This is the 128/63 -> 64/63 MSps path for the
-/// RTL2832U ISDB-T front end: the discarded samples never leave WASM.
+/// A windowed-sinc FIR runs before downsampling: the RTL-SDR hardware still
+/// passes surrounding ISDB-T segments, which otherwise alias into one-seg.
+/// Only retained outputs evaluate the FIR (one fixed polyphase branch).
 pub struct U8Decimator {
     factor: i32,
     phase: i32,
     alpha: f64,
     dc_re: f64,
     dc_im: f64,
+    taps: Vec<f64>,
+    history_re: Vec<f64>,
+    history_im: Vec<f64>,
+    cursor: usize,
     out_re: Vec<f32>,
     out_im: Vec<f32>,
 }
 
 impl U8Decimator {
     fn new(factor: i32, alpha: f64) -> Self {
+        let factor = factor.max(1);
+        let len = if factor == 1 { 1 } else { 63 };
+        let mid = (len - 1) as f64 / 2.0;
+        let mut taps = vec![0.0; len];
+        let mut sum = 0.0;
+        for (k, tap) in taps.iter_mut().enumerate() {
+            let t = k as f64 - mid;
+            let window = if mid == 0.0 {
+                1.0
+            } else {
+                0.54 + 0.46 * (PI * t / mid).cos()
+            };
+            *tap = sinc(t / factor as f64) / factor as f64 * window;
+            sum += *tap;
+        }
+        for tap in &mut taps {
+            *tap /= sum;
+        }
         Self {
-            factor: factor.max(1),
+            factor,
             phase: 0,
             alpha,
             dc_re: 0.0,
             dc_im: 0.0,
+            taps,
+            history_re: vec![0.0; len],
+            history_im: vec![0.0; len],
+            cursor: 0,
             out_re: Vec::new(),
             out_im: Vec::new(),
         }
@@ -366,6 +391,9 @@ impl U8Decimator {
         self.phase = 0;
         self.dc_re = 0.0;
         self.dc_im = 0.0;
+        self.history_re.fill(0.0);
+        self.history_im.fill(0.0);
+        self.cursor = 0;
         self.out_re.clear();
         self.out_im.clear();
     }
@@ -380,14 +408,27 @@ impl U8Decimator {
         let mut dc_im = self.dc_im;
         let samples = data.len() / 2;
         for s in 0..samples {
+            self.history_re[self.cursor] = (data[2 * s] as f64 - 127.5) / 127.5;
+            self.history_im[self.cursor] = (data[2 * s + 1] as f64 - 127.5) / 127.5;
             if phase == 0 {
-                let re = (data[2 * s] as f64 - 127.5) / 127.5;
-                let im = (data[2 * s + 1] as f64 - 127.5) / 127.5;
+                let mut re = 0.0;
+                let mut im = 0.0;
+                let mut index = self.cursor;
+                for tap in &self.taps {
+                    re += tap * self.history_re[index];
+                    im += tap * self.history_im[index];
+                    index = if index == 0 {
+                        self.taps.len() - 1
+                    } else {
+                        index - 1
+                    };
+                }
                 dc_re += alpha * (re - dc_re);
                 dc_im += alpha * (im - dc_im);
                 self.out_re.push((re - dc_re) as f32);
                 self.out_im.push((im - dc_im) as f32);
             }
+            self.cursor = (self.cursor + 1) % self.taps.len();
             phase += 1;
             if phase >= factor {
                 phase = 0;

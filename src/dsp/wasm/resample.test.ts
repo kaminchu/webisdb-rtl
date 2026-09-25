@@ -197,6 +197,36 @@ function u8Bytes(n: number, seed: number): Uint8Array {
 }
 
 describe('WasmU8Decimator', () => {
+  it.each([100_000, -100_000, 214_000, -214_000])(
+    'preserves %s Hz while rejecting signals that alias onto it',
+    (frequency) => {
+      const rate = ONESEG_SAMPLING_HZ * 2
+      const amplitude = (hz: number) => {
+        const raw = new Uint8Array(32768)
+        for (let s = 0; s < raw.length / 2; s++) {
+          const phase = (2 * Math.PI * hz * s) / rate
+          raw[2 * s] = Math.round(127.5 + 100 * Math.cos(phase))
+          raw[2 * s + 1] = Math.round(127.5 + 100 * Math.sin(phase))
+        }
+        const decimator = new WasmU8Decimator(2, 0)
+        try {
+          const out = decimator.process(raw)
+          let power = 0
+          for (let i = 128; i < out.re.length; i++) {
+            power += out.re[i] ** 2 + out.im[i] ** 2
+          }
+          return Math.sqrt(power / (out.re.length - 128))
+        } finally {
+          decimator.dispose()
+        }
+      }
+      const wanted = amplitude(frequency)
+      const alias = amplitude(frequency - Math.sign(frequency) * ONESEG_SAMPLING_HZ)
+      expect(wanted).toBeCloseTo(100 / 127.5, 2)
+      expect(alias / wanted).toBeLessThan(0.01)
+    },
+  )
+
   it.each([1, 2])('matches U8Decimator across uneven chunks (factor %i)', (factor) => {
     const n = 9000
     const raw = u8Bytes(n, 17)

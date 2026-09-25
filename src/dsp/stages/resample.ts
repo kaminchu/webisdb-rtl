@@ -46,9 +46,8 @@ export interface ResampledBlock {
 /**
  * Fused U8 IQ unpack, DC removal and integer decimation reference.
  *
- * Keeps every `factor`-th complex sample, normalises it with the same
- * `(x - 127.5) / 127.5` mapping as the front end and removes the running-mean DC
- * offset. Mirrors the `U8Decimator` WASM kernel.
+ * Filters before downsampling so surrounding ISDB-T segments cannot alias into
+ * the centre segment. Mirrors the `U8Decimator` WASM kernel.
  */
 export class U8Decimator {
   private readonly factor: number
@@ -56,16 +55,37 @@ export class U8Decimator {
   private phase = 0
   private dcRe = 0
   private dcIm = 0
+  private readonly taps: Float64Array
+  private readonly historyRe: Float64Array
+  private readonly historyIm: Float64Array
+  private cursor = 0
 
   constructor(factor: number, alpha = 0.001) {
     this.factor = Math.max(1, Math.floor(factor))
     this.alpha = alpha
+    this.taps = new Float64Array(this.factor === 1 ? 1 : 63)
+    const mid = (this.taps.length - 1) / 2
+    let sum = 0
+    for (let k = 0; k < this.taps.length; k++) {
+      const t = k - mid
+      const value =
+        (sinc(t / this.factor) / this.factor) *
+        (mid === 0 ? 1 : 0.54 + 0.46 * Math.cos((Math.PI * t) / mid))
+      this.taps[k] = value
+      sum += value
+    }
+    for (let k = 0; k < this.taps.length; k++) this.taps[k] /= sum
+    this.historyRe = new Float64Array(this.taps.length)
+    this.historyIm = new Float64Array(this.taps.length)
   }
 
   reset(): void {
     this.phase = 0
     this.dcRe = 0
     this.dcIm = 0
+    this.historyRe.fill(0)
+    this.historyIm.fill(0)
+    this.cursor = 0
   }
 
   process(data: Uint8Array | ArrayLike<number>): ResampledBlock {
@@ -74,14 +94,23 @@ export class U8Decimator {
     const im: number[] = []
     const alpha = this.alpha
     for (let s = 0; s < samples; s++) {
+      this.historyRe[this.cursor] = (Number(data[2 * s]) - 127.5) / 127.5
+      this.historyIm[this.cursor] = (Number(data[2 * s + 1]) - 127.5) / 127.5
       if (this.phase === 0) {
-        const r = (Number(data[2 * s]) - 127.5) / 127.5
-        const q = (Number(data[2 * s + 1]) - 127.5) / 127.5
+        let r = 0
+        let q = 0
+        let index = this.cursor
+        for (let k = 0; k < this.taps.length; k++) {
+          r += this.taps[k] * this.historyRe[index]
+          q += this.taps[k] * this.historyIm[index]
+          index = index === 0 ? this.taps.length - 1 : index - 1
+        }
         this.dcRe += alpha * (r - this.dcRe)
         this.dcIm += alpha * (q - this.dcIm)
         re.push(r - this.dcRe)
         im.push(q - this.dcIm)
       }
+      this.cursor = (this.cursor + 1) % this.taps.length
       this.phase += 1
       if (this.phase >= this.factor) this.phase = 0
     }
