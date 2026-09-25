@@ -53,6 +53,10 @@ const STREAM_TYPE_VIDEO = 0x1b
 const STREAM_TYPE_AUDIO = 0x0f
 const STREAM_TYPE_PRIVATE = 0x06
 const DATA_COMPONENT_CAPTION = 0x0008
+const DATA_COMPONENT_ONESEG_CAPTION = 0x0012
+
+// ISO/IEC 13818-1 PES syntax: these stream IDs have no optional PES header.
+const PES_WITHOUT_OPTIONAL_HEADER = new Set([0xbc, 0xbe, 0xbf, 0xf0, 0xf1, 0xf2, 0xf8, 0xff])
 
 export interface DemuxerCallbacks {
   onPat?: (section: PatSection) => void
@@ -81,11 +85,9 @@ export function classifyStream(stream: PmtStream): StreamKind {
   if (stream.streamType === STREAM_TYPE_AUDIO) return 'audio'
   if (stream.streamType === STREAM_TYPE_PRIVATE) {
     const descriptor = stream.descriptors.find((item) => item.tag === DescriptorTag.DataComponent)
-    if (
-      descriptor &&
-      decodeDataComponent(descriptor.data).dataComponentId === DATA_COMPONENT_CAPTION
-    ) {
-      return 'caption'
+    if (descriptor) {
+      const id = decodeDataComponent(descriptor.data).dataComponentId
+      if (id === DATA_COMPONENT_CAPTION || id === DATA_COMPONENT_ONESEG_CAPTION) return 'caption'
     }
     return 'data'
   }
@@ -263,7 +265,7 @@ export class Demuxer {
     let offset = 6
     let pts: number | undefined
     let dts: number | undefined
-    if (offset + 3 <= buffer.length) {
+    if (!PES_WITHOUT_OPTIONAL_HEADER.has(streamId) && offset + 3 <= buffer.length) {
       const flags = buffer[offset + 1]
       const headerDataLength = buffer[offset + 2]
       const ptsDtsFlags = (flags >> 6) & 0x03

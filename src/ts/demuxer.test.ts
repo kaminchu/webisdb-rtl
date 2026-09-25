@@ -247,6 +247,26 @@ describe('Demuxer', () => {
 })
 
 describe('classifyStream', () => {
+  it.each([0x0008, 0x0012])('recognizes caption data component %i', (id) => {
+    expect(
+      classifyStream({
+        pid: 1,
+        streamType: 0x06,
+        descriptors: [{ tag: 0xc9, data: Uint8Array.from([id >> 8, id & 0xff]) }],
+      }),
+    ).toBe('caption')
+  })
+
+  it('keeps non-caption data components as data', () => {
+    expect(
+      classifyStream({
+        pid: 1,
+        streamType: 0x06,
+        descriptors: [{ tag: 0xc9, data: Uint8Array.from([0, 0x0c]) }],
+      }),
+    ).toBe('data')
+  })
+
   it('maps stream types to kinds', () => {
     expect(classifyStream({ pid: 1, streamType: 0x1b, descriptors: [] })).toBe('video')
     expect(classifyStream({ pid: 1, streamType: 0x0f, descriptors: [] })).toBe('audio')

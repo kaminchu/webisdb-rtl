@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { TransportStream } from '../ts/TransportStream'
+import {
+  buildDataComponent,
+  buildPes,
+  buildPmt,
+  pesToPackets,
+  sectionToPackets,
+} from '../ts/sectionBuilder'
 import { CaptionRenderer, decodeCaptionPayload } from './caption'
 
 const MANAGEMENT = 0
@@ -274,6 +282,41 @@ function fakeContext(): { context: CanvasRenderingContext2D; calls: DrawCall[] }
 }
 
 describe('CaptionRenderer', () => {
+  it.each([0xbd, 0xbf])('renders Profile C captions from TS with stream_id %i', (streamId) => {
+    const renderer = new CaptionRenderer()
+    const received: Uint8Array[] = []
+    const stream = new TransportStream({
+      onPes: (packet) => {
+        if (packet.kind !== 'caption') return
+        received.push(packet.data)
+        renderer.update(packet.data, packet.pts)
+      },
+    })
+    stream.push(
+      sectionToPackets(
+        buildPmt({
+          programNumber: 1,
+          pcrPid: 0x101,
+          streams: [{ streamType: 0x06, pid: 0x103, descriptors: buildDataComponent(0x0012) }],
+        }),
+        0x1fc8,
+      ),
+    )
+    const payload = captionPes(dataGroup(STATEMENT, statementData([0x0c, 0xa4, 0xb3])))
+    const packet =
+      streamId === 0xbd
+        ? buildPes(streamId, payload, { pts: 90_000 })
+        : Uint8Array.from([0, 0, 1, streamId, 0, payload.length, ...payload])
+    stream.push(pesToPackets(0x103, packet))
+
+    expect(received).toEqual([payload])
+    const { context, calls } = fakeContext()
+    renderer.draw(context, 320, 180, 90_000)
+    expect(renderer.current?.chars.map((char) => char.text).join('')).toBe('こ')
+    expect(renderer.current?.startPts90k).toBe(streamId === 0xbd ? 90_000 : null)
+    expect(calls.some((call) => call.method === 'fillText')).toBe(true)
+  })
+
   it('stores the latest frame and clears on demand', () => {
     const renderer = new CaptionRenderer()
     const frame = decodeCaptionPayload(
