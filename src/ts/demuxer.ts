@@ -58,6 +58,9 @@ const DATA_COMPONENT_ONESEG_CAPTION = 0x0012
 // ISO/IEC 13818-1 PES syntax: these stream IDs have no optional PES header.
 const PES_WITHOUT_OPTIONAL_HEADER = new Set([0xbc, 0xbe, 0xbf, 0xf0, 0xf1, 0xf2, 0xf8, 0xff])
 
+/** Cap a length-0 (unbounded) PES assembly so a missing PUSI cannot leak memory. */
+const MAX_PES_ASSEMBLY_BYTES = 1 << 20
+
 export interface DemuxerCallbacks {
   onPat?: (section: PatSection) => void
   onPmt?: (section: PmtSection) => void
@@ -233,9 +236,12 @@ export class Demuxer {
     }
 
     const current = this.pesBuffers.get(pid)
-    if (current && this.isPesComplete(current)) {
+    if (!current) return
+    if (this.isPesComplete(current)) {
       this.pesBuffers.delete(pid)
       this.emitPes(pid, current)
+    } else if (current.length > MAX_PES_ASSEMBLY_BYTES) {
+      this.pesBuffers.delete(pid)
     }
   }
 

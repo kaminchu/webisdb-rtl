@@ -35,6 +35,9 @@ export class ReceiverController {
   #unsubscribeSamples: (() => void) | null = null
   #unsubscribeState: (() => void) | null = null
   #started = false
+  #tuneTargetHz: number | null = null
+  #tuneTask: Promise<void> = Promise.resolve()
+  #tuning = false
 
   constructor(options: ReceiverControllerOptions = {}) {
     this.#player = options.player ?? null
@@ -202,7 +205,37 @@ export class ReceiverController {
     saveSettings({ lastChannel: channel, lastFrequency: channelToFrequencyHz(channel) })
   }
 
-  async tuneFrequency(hz: number): Promise<void> {
+  /**
+   * Queue a tune. Requests made while a tune is in flight are coalesced so the
+   * worker/hardware teardown of one channel can never interleave with the setup
+   * of another.
+   */
+  tuneFrequency(hz: number): Promise<void> {
+    this.#tuneTargetHz = hz
+    if (!this.#tuning) {
+      this.#tuning = true
+      this.#tuneTask = this.#runTuneLoop()
+    }
+    return this.#tuneTask
+  }
+
+  async #runTuneLoop(): Promise<void> {
+    try {
+      while (this.#tuneTargetHz !== null) {
+        const hz = this.#tuneTargetHz
+        this.#tuneTargetHz = null
+        try {
+          await this.#applyTune(hz)
+        } catch (error) {
+          this.#fail(error)
+        }
+      }
+    } finally {
+      this.#tuning = false
+    }
+  }
+
+  async #applyTune(hz: number): Promise<void> {
     const source = this.#source
     const restart = source?.state === 'running'
     if (source) {

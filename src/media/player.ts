@@ -37,6 +37,8 @@ export interface PlayerStats {
 
 const DEFAULT_VIDEO_CONFIG: VideoDecoderConfigInput = { codec: 'avc1.42E01E' }
 const MAX_PENDING_FRAMES = 64
+// Bound the jitter buffer so a stalled master clock cannot grow it without limit.
+const MAX_BUFFERED_PES = 1024
 // Video access-unit timing needs the following PES; decode before its PTS is due.
 const DECODE_AHEAD_SEC = 1
 const CAPTURE_FPS = 30
@@ -165,6 +167,11 @@ export class OneSegPlayer {
     const ptsSec = packet.pts !== undefined ? packet.pts / 90_000 : this.avSync.now()
     this.pesQueue.push({ packet, ptsSec })
     this.pesQueue.sort((a, b) => a.ptsSec - b.ptsSec)
+    if (this.pesQueue.length > MAX_BUFFERED_PES) {
+      const excess = this.pesQueue.length - MAX_BUFFERED_PES
+      this.pesQueue.splice(0, excess)
+      this.counters.dropped += excess
+    }
     if (this.queueTimer !== null) clearTimeout(this.queueTimer)
     this.queueTimer = null
     this.drainQueue()

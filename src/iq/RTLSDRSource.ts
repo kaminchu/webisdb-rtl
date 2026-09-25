@@ -18,6 +18,14 @@ import type { Tuner } from '../driver/rtlsdr/tuner/tuner'
 const DEFAULT_SAMPLE_RATE = 1_200_000
 const DEFAULT_TRANSFER_SIZE = 256 * 1024
 const TRANSFERS_IN_FLIGHT = 8
+const MAX_CONSECUTIVE_READ_FAILURES = 5
+const READ_RETRY_DELAY_MS = 50
+/** Bound on joining the read loop so a stalled USB transfer cannot block stop(). */
+const READ_STOP_GRACE_MS = 500
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export interface RTLSDRSourceOptions {
   sampleRate?: number
@@ -46,6 +54,7 @@ export class RTLSDRSource implements IQSource {
   private label: string
 
   private running = false
+  private session = 0
   private sequence = 0
   private readTask: Promise<void> | null = null
   private unsubscribeDisconnect: (() => void) | null = null
@@ -113,7 +122,7 @@ export class RTLSDRSource implements IQSource {
     }
     const task = this.readTask
     this.readTask = null
-    if (task) await task.catch(() => undefined)
+    if (task) await Promise.race([task.catch(() => undefined), delay(READ_STOP_GRACE_MS)])
     this.rtl = null
     this.tuner = null
     this.profile = null
@@ -140,13 +149,15 @@ export class RTLSDRSource implements IQSource {
   }
 
   async start(): Promise<void> {
-    if (this.currentState !== 'open') return
+    if (this.currentState !== 'open' || this.running) return
     this.setState('starting')
     this.running = true
+    const session = ++this.session
     this.sequence = 0
     await this.rtl?.resetBuffer()
+    if (!this.running || this.session !== session) return
     this.setState('running')
-    this.readTask = this.readLoop()
+    this.readTask = this.readLoop(session)
   }
 
   async stop(): Promise<void> {
@@ -155,7 +166,8 @@ export class RTLSDRSource implements IQSource {
     this.setState('stopping')
     const task = this.readTask
     this.readTask = null
-    if (task) await task.catch(() => {})
+    // A stalled bulk transfer may never settle; do not await it indefinitely.
+    if (task) await Promise.race([task.catch(() => undefined), delay(READ_STOP_GRACE_MS)])
     this.setState('open')
   }
 
@@ -169,8 +181,8 @@ export class RTLSDRSource implements IQSource {
     return () => this.stateCallbacks.delete(cb)
   }
 
-  private async readLoop(): Promise<void> {
-    const read = async () => {
+  private async readLoop(session: number): Promise<void> {
+    const read = async (): Promise<{ data?: Uint8Array; error?: unknown }> => {
       try {
         return { data: await this.transport.bulkIn(RTL_BULK_ENDPOINT, this.transferSize) }
       } catch (error) {
@@ -179,30 +191,47 @@ export class RTLSDRSource implements IQSource {
     }
     // Keep the endpoint queued while JavaScript handles completed buffers; a single
     // outstanding transfer lets the device FIFO overflow between submissions.
-    const pending = Array.from({ length: TRANSFERS_IN_FLIGHT }, read)
-    while (this.running) {
-      const result = await pending.shift()!
-      if (!this.running) break
-      if (!result.data) {
-        this.running = false
-        this.fail(result.error)
-        break
-      }
-      pending.push(read())
-      const data = result.data
-      if (data.length === 0) continue
+    const pending: Array<Promise<{ data?: Uint8Array; error?: unknown }>> = []
+    for (let i = 0; i < TRANSFERS_IN_FLIGHT; i++) pending.push(read())
+    let failures = 0
+    try {
+      while (this.running && this.session === session) {
+        const result = await pending.shift()!
+        if (!this.running || this.session !== session) break
+        if (!result.data) {
+          // A single stalled/failed transfer is recoverable; only give up after
+          // several consecutive failures.
+          failures++
+          if (failures >= MAX_CONSECUTIVE_READ_FAILURES) {
+            this.running = false
+            this.fail(result.error)
+            break
+          }
+          await delay(READ_RETRY_DELAY_MS * failures)
+          if (!this.running || this.session !== session) break
+          pending.push(read())
+          continue
+        }
+        failures = 0
+        pending.push(read())
+        const data = result.data
+        if (data.length === 0) continue
 
-      const chunk: IqChunk = {
-        data,
-        format: 'u8',
-        sampleRate: this.sampleRate,
-        centerFrequency: this.centerFrequency,
-        sequence: this.sequence++,
-        timestamp: performance.now(),
+        const chunk: IqChunk = {
+          data,
+          format: 'u8',
+          sampleRate: this.sampleRate,
+          centerFrequency: this.centerFrequency,
+          sequence: this.sequence++,
+          timestamp: performance.now(),
+        }
+        for (const cb of this.sampleCallbacks) cb(chunk)
       }
-      for (const cb of this.sampleCallbacks) cb(chunk)
+    } finally {
+      // Outstanding transfers may never settle after a stall; discard them so a
+      // superseded loop cannot emit stale chunks.
+      for (const promise of pending) void promise.catch(() => undefined)
     }
-    await Promise.all(pending)
   }
 
   private handleDisconnect(): void {

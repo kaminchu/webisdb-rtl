@@ -70,6 +70,45 @@ describe('RTLSDRSource', () => {
     expect(chunks).toHaveLength(2)
   })
 
+  it('recovers from a transient bulk transfer failure', async () => {
+    const transport = new MockUsbTransport()
+    transport.controlInHandler = (_request, _value, _index, length) =>
+      new Uint8Array(length).fill(0xa3)
+
+    const source = new RTLSDRSource(transport)
+    const chunks: IqChunk[] = []
+    source.onSamples((chunk) => chunks.push(chunk))
+    await source.open()
+    await source.start()
+
+    transport.failNextBulk(1)
+    for (let i = 0; i < 8; i++) transport.pushBulk(Uint8Array.of(1, 2, 3, 4))
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    expect(source.state).toBe('running')
+    expect(chunks.length).toBeGreaterThan(0)
+
+    const stopping = source.stop()
+    transport.releasePendingBulk()
+    await stopping
+    await source.close()
+  })
+
+  it('stops with an error after repeated bulk transfer failures', async () => {
+    const transport = new MockUsbTransport()
+    transport.controlInHandler = (_request, _value, _index, length) =>
+      new Uint8Array(length).fill(0xa3)
+
+    const source = new RTLSDRSource(transport)
+    await source.open()
+    transport.failNextBulk(100)
+    await source.start()
+
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    expect(source.state).toBe('error')
+    await source.close()
+  })
+
   it('reports an error state when the device disconnects', async () => {
     const transport = new MockUsbTransport()
     transport.controlInHandler = (_request, _value, _index, length) =>

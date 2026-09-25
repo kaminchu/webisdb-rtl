@@ -208,6 +208,7 @@ export class MockUsbTransport implements UsbTransport {
 
   private bulkQueue: Uint8Array[] = []
   private pendingBulk: Array<(data: Uint8Array) => void> = []
+  private bulkFailures = 0
   private readonly disconnectHandlers = new Set<() => void>()
 
   async open(): Promise<void> {
@@ -255,11 +256,20 @@ export class MockUsbTransport implements UsbTransport {
 
   async bulkIn(endpoint: number, length: number): Promise<Uint8Array> {
     this.transfers.push({ type: 'bulkIn', request: 0, value: 0, index: 0, length, endpoint })
+    if (this.bulkFailures > 0) {
+      this.bulkFailures--
+      throw new Error('USB transfer failed: stall')
+    }
     const queued = this.bulkQueue.shift()
     if (queued) return queued
     return new Promise<Uint8Array>((resolve) => {
       this.pendingBulk.push(resolve)
     })
+  }
+
+  /** Make the next `count` bulk IN transfers reject, simulating a stall. */
+  failNextBulk(count = 1): void {
+    this.bulkFailures += count
   }
 
   pushBulk(data: Uint8Array): void {

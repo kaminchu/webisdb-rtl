@@ -2,6 +2,9 @@ const SAMPLE_RATES = [
   96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ]
 
+/** A valid AAC frame is far smaller; drop garbage that never resynchronises. */
+const MAX_PENDING_BYTES = 8192
+
 export interface AdtsFrame {
   data: Uint8Array
   timestamp: number
@@ -56,7 +59,8 @@ export class AdtsAssembler {
       this.timestamp += (1024 * ((bytes[offset + 6] & 3) + 1) * 1_000_000) / sampleRate
       offset += length
     }
-    this.pending = bytes.slice(offset)
+    this.pending =
+      bytes.length - offset > MAX_PENDING_BYTES ? new Uint8Array(0) : bytes.slice(offset)
     return frames
   }
 }
