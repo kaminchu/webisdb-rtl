@@ -278,6 +278,52 @@ pub extern "C" fn time_deinterleaver_process(
     }
 }
 
+/// Fused `frequency_deinterleave` followed by `time_deinterleaver_process`.
+///
+/// Keeps the frequency-deinterleaved plane inside WASM linear memory instead of
+/// round-tripping it through the host between the two stages. Both steps write
+/// index `c` from index `c`, so the time deinterleave runs in place on `out_*`.
+#[no_mangle]
+pub extern "C" fn frequency_time_deinterleave(
+    state: *mut TimeDeinterleaver,
+    perm_ptr: *const u32,
+    size: usize,
+    in_re: *const f32,
+    in_im: *const f32,
+    out_re: *mut f32,
+    out_im: *mut f32,
+    n: usize,
+    rotation: i32,
+) {
+    if state.is_null()
+        || perm_ptr.is_null()
+        || in_re.is_null()
+        || in_im.is_null()
+        || out_re.is_null()
+        || out_im.is_null()
+        || size == 0
+        || n == 0
+    {
+        return;
+    }
+    unsafe {
+        let perm = core::slice::from_raw_parts(perm_ptr, size);
+        let ire = core::slice::from_raw_parts(in_re, n);
+        let iim = core::slice::from_raw_parts(in_im, n);
+        let ore = core::slice::from_raw_parts_mut(out_re, n);
+        let oim = core::slice::from_raw_parts_mut(out_im, n);
+        let sz = size as i64;
+        let rot = rotation as i64;
+        for k in 0..n {
+            let idx = (((k as i64 - rot) % sz) + sz) % sz;
+            let src = perm[idx as usize] as usize;
+            ore[k] = ire[src];
+            oim[k] = iim[src];
+        }
+    }
+    time_deinterleaver_process(state, out_re, out_im, out_re, out_im, n);
+}
+
 const BYTE_INTERLEAVER_BRANCHES: usize = 12;
 const BYTE_INTERLEAVER_M: usize = 17;
 

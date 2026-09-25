@@ -49,6 +49,25 @@ describe('WasmFftBackend', () => {
     }
   })
 
+  it('forwardFrom matches forward on a slice of a larger buffer', () => {
+    const n = 512
+    const offset = 37
+    const total = offset + n + 11
+    const srcRe = deterministic(total, 321)
+    const srcIm = deterministic(total, 654)
+    const expectedRe = srcRe.slice(offset, offset + n)
+    const expectedIm = srcIm.slice(offset, offset + n)
+    wasm.forward(expectedRe, expectedIm)
+
+    const dstRe = new Float32Array(n)
+    const dstIm = new Float32Array(n)
+    wasm.forwardFrom(srcRe, srcIm, offset, n, dstRe, dstIm)
+    for (let i = 0; i < n; i++) {
+      expect(dstRe[i]).toBeCloseTo(expectedRe[i], 5)
+      expect(dstIm[i]).toBeCloseTo(expectedIm[i], 5)
+    }
+  })
+
   it('peaks at the bin of a real tone', () => {
     const n = 256
     const k0 = 20

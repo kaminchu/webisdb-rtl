@@ -142,6 +142,31 @@ describe('WasmTimeDeinterleaver', () => {
   }
 })
 
+describe('WasmTimeDeinterleaver fused frequency+time', () => {
+  for (const mode of MODES) {
+    const carriers = MODE_PARAMS[mode].dataCarriersPerSegment
+    for (const I of [0, 1, 4]) {
+      it(`matches the two-step path for mode ${mode} I=${I}`, () => {
+        const fused = new WasmTimeDeinterleaver(mode, I)
+        const twoStep = new WasmTimeDeinterleaver(mode, I)
+        for (let call = 0; call < 3; call++) {
+          const plane = {
+            re: randomF32(carriers, 0x3333 + mode * 31 + I * 7 + call),
+            im: randomF32(carriers, 0x4444 + mode * 31 + I * 7 + call),
+          }
+          const fusedOut = fused.processFrequencyDeinterleaved(plane, mode)
+          const deinterleaved = frequencyDeinterleaveWasm(plane, mode)
+          const stepOut = twoStep.process(deinterleaved.re, deinterleaved.im)
+          for (let c = 0; c < carriers; c++) {
+            expect(fusedOut.re[c]).toBeCloseTo(stepOut.re[c], 5)
+            expect(fusedOut.im[c]).toBeCloseTo(stepOut.im[c], 5)
+          }
+        }
+      })
+    }
+  }
+})
+
 describe('WasmByteDeinterleaver', () => {
   it('matches the TS byte deinterleaver over multiple calls', () => {
     const ts = new ByteDeinterleaver()

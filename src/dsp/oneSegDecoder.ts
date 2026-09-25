@@ -20,7 +20,6 @@ import {
   WasmByteDeinterleaver,
   WasmSoftBitDeinterleaver,
   WasmTimeDeinterleaver,
-  frequencyDeinterleaveWasm,
 } from './wasm/deinterleave'
 import { WasmRsBackend } from './wasm/reedSolomon'
 import { WasmStreamingViterbi } from './wasm/viterbi'
@@ -113,8 +112,7 @@ export class OneSegDecoder {
       if (plane.re.length !== this.carriersPerSymbol) {
         throw new Error(`expected ${this.carriersPerSymbol} carriers, got ${plane.re.length}`)
       }
-      const deinterleaved = frequencyDeinterleaveWasm(plane, this.mode)
-      const td = this.timeDeinterleaver.process(deinterleaved.re, deinterleaved.im)
+      const td = this.timeDeinterleaver.processFrequencyDeinterleaved(plane, this.mode)
       if (this.previous === null && this.modulation === CarrierModulation.DQPSK) {
         // Differential reference for the first symbol is the previous frame.
         this.previous = td

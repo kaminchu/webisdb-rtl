@@ -34,6 +34,34 @@ export class WasmFftBackend implements FftBackend {
     this.run(re, im, 'fft_inverse', true)
   }
 
+  /**
+   * Forward-transform `length` samples starting at `srcOffset` and write the
+   * result to `dstRe`/`dstIm`, so callers can transform a slice of a larger
+   * buffer without staging it into a temporary array first.
+   */
+  forwardFrom(
+    srcRe: Float32Array,
+    srcIm: Float32Array,
+    srcOffset: number,
+    length: number,
+    dstRe: Float32Array,
+    dstIm: Float32Array,
+  ): void {
+    if (length <= 1) {
+      if (length === 1) {
+        dstRe[0] = srcRe[srcOffset]
+        dstIm[0] = srcIm[srcOffset]
+      }
+      return
+    }
+    this.ensure(length)
+    this.heap.f32(this.pRe, length).set(srcRe.subarray(srcOffset, srcOffset + length))
+    this.heap.f32(this.pIm, length).set(srcIm.subarray(srcOffset, srcOffset + length))
+    ;(this.wasm.exports.fft_forward as Transform)(this.pRe, this.pIm, length)
+    dstRe.set(this.heap.f32(this.pRe, length))
+    dstIm.set(this.heap.f32(this.pIm, length))
+  }
+
   private ensure(n: number): void {
     if (n <= this.cap) return
     if (this.cap > 0) {

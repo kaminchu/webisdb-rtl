@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,12 +20,45 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const wasmDir = resolve(root, 'wasm')
 const outDir = resolve(root, 'src/dsp/wasm')
 const targetDir = resolve(wasmDir, 'target')
+const wasmOpt = resolve(root, 'node_modules/.bin/wasm-opt')
+
+const SIMD_FLAG = '-C target-feature=+simd128'
+
+function rustFlags() {
+  const existing = process.env.RUSTFLAGS ?? ''
+  return existing.includes('+simd128') ? existing : `${existing} ${SIMD_FLAG}`.trim()
+}
 
 function crateName(dir) {
   const manifest = readFileSync(resolve(dir, 'Cargo.toml'), 'utf8')
   const match = manifest.match(/^\s*name\s*=\s*"([^"]+)"/m)
   if (!match) throw new Error(`no package name in ${dir}/Cargo.toml`)
   return match[1]
+}
+
+function optimize(wasmPath) {
+  if (!existsSync(wasmOpt)) {
+    console.warn(`wasm-opt not found at ${wasmOpt}; embedding unoptimized template`)
+    return readFileSync(wasmPath)
+  }
+  const optimized = `${wasmPath}.opt.wasm`
+  execFileSync(
+    wasmOpt,
+    [
+      wasmPath,
+      '-O3',
+      '--enable-simd',
+      '--enable-bulk-memory',
+      '--enable-nontrapping-float-to-int',
+      '--strip-debug',
+      '-o',
+      optimized,
+    ],
+    { stdio: 'inherit' },
+  )
+  const bytes = readFileSync(optimized)
+  rmSync(optimized, { force: true })
+  return bytes
 }
 
 function build(name) {
@@ -36,12 +69,12 @@ function build(name) {
   execFileSync('cargo', ['build', '--release', '--target', 'wasm32-unknown-unknown'], {
     cwd: dir,
     stdio: 'inherit',
-    env: { ...process.env, CARGO_TARGET_DIR: targetDir },
+    env: { ...process.env, CARGO_TARGET_DIR: targetDir, RUSTFLAGS: rustFlags() },
   })
 
   const pkg = crateName(dir)
   const wasmPath = resolve(targetDir, 'wasm32-unknown-unknown/release', `${pkg}.wasm`)
-  const bytes = readFileSync(wasmPath)
+  const bytes = optimize(wasmPath)
   mkdirSync(outDir, { recursive: true })
   const outFile = resolve(outDir, `${name}.bytes.ts`)
   writeFileSync(

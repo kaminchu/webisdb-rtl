@@ -31,6 +31,7 @@
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "@vitest/coverage-v8": "^5.0.1",
+    "binaryen": "^132.0.0",
     "happy-dom": "^20.0.0",
     "knip": "^6.38.0",
     "oxfmt": "^0.70.0",

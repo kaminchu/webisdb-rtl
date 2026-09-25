@@ -514,9 +514,7 @@ export class OneSegPipeline {
     for (let s = 0; s < cap; s++) {
       const start = starts[s]
       if (start + n > cRe.length) break
-      fRe.set(cRe.subarray(start, start + n))
-      fIm.set(cIm.subarray(start, start + n))
-      this.fft.forward(fRe, fIm)
+      this.fft.forwardFrom(cRe, cIm, start, n, fRe, fIm)
       let plane = this.planePool[s]
       if (plane === undefined || plane.re.length !== n) {
         plane = { re: new Float32Array(n), im: new Float32Array(n) }
@@ -659,9 +657,7 @@ export class OneSegPipeline {
     if (mode === null || start + n > this.bufLen) return
     const fRe = this.fftRe
     const fIm = this.fftIm
-    fRe.set(this.bufRe.subarray(start, start + n))
-    fIm.set(this.bufIm.subarray(start, start + n))
-    this.fft.forward(fRe, fIm)
+    this.fft.forwardFrom(this.bufRe, this.bufIm, start, n, fRe, fIm)
     this.symbolsProcessed++
 
     const tmccC = tmccCarriersFor(mode)

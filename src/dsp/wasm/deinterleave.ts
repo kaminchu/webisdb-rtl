@@ -37,6 +37,17 @@ type TimeProcessFn = (
   outIm: number,
   n: number,
 ) => void
+type FreqTimeProcessFn = (
+  state: number,
+  perm: number,
+  size: number,
+  inRe: number,
+  inIm: number,
+  outRe: number,
+  outIm: number,
+  n: number,
+  rotation: number,
+) => void
 type ByteProcessByteFn = (state: number, value: number) => number
 type ByteProcessFn = (state: number, input: number, len: number, out: number) => void
 
@@ -234,11 +245,44 @@ export class WasmTimeDeinterleaver {
       im: heap.f32(this.pOutIm, n).slice(),
     }
   }
+
+  /**
+   * Frequency-deinterleave `plane` and time-deinterleave it in a single WASM
+   * call, avoiding a host round-trip of the intermediate plane.
+   */
+  processFrequencyDeinterleaved(
+    plane: ComplexPlane,
+    mode: TransmissionMode,
+    rotation = 0,
+  ): ComplexPlane {
+    const { ptr: perm, size } = ensurePermutation(mode)
+    const n = this.carriers
+    heap.f32(this.pInRe, n).set(plane.re.subarray(0, n))
+    heap.f32(this.pInIm, n).set(plane.im.subarray(0, n))
+    exportFn<FreqTimeProcessFn>('frequency_time_deinterleave')(
+      this.state,
+      perm,
+      size,
+      this.pInRe,
+      this.pInIm,
+      this.pOutRe,
+      this.pOutIm,
+      n,
+      rotation,
+    )
+    return {
+      re: heap.f32(this.pOutRe, n).slice(),
+      im: heap.f32(this.pOutIm, n).slice(),
+    }
+  }
 }
 
 /** WASM 12-branch convolutional byte deinterleaver. */
 export class WasmByteDeinterleaver {
   private state = 0
+  private cap = 0
+  private pIn = 0
+  private pOut = 0
 
   constructor() {
     this.state = exportFn<() => number>('byte_deinterleaver_create')()
@@ -249,23 +293,35 @@ export class WasmByteDeinterleaver {
   }
 
   destroy(): void {
+    this.freeScratch()
     exportFn<(state: number) => void>('byte_deinterleaver_destroy')(this.state)
     this.state = 0
   }
 
   process(input: Uint8Array): Uint8Array {
     const n = input.length
-    const pIn = wasmAlloc(wasm, n)
-    const pOut = wasmAlloc(wasm, n)
-    heap.u8(pIn, n).set(input)
-    exportFn<ByteProcessFn>('byte_deinterleaver_process')(this.state, pIn, n, pOut)
-    const out = heap.u8(pOut, n).slice()
-    wasmFree(wasm, pIn, n)
-    wasmFree(wasm, pOut, n)
-    return out
+    this.ensure(n)
+    heap.u8(this.pIn, n).set(input)
+    exportFn<ByteProcessFn>('byte_deinterleaver_process')(this.state, this.pIn, n, this.pOut)
+    return heap.u8(this.pOut, n).slice()
   }
 
   processByte(value: number): number {
     return exportFn<ByteProcessByteFn>('byte_deinterleaver_process_byte')(this.state, value)
+  }
+
+  private ensure(n: number): void {
+    if (n <= this.cap) return
+    this.freeScratch()
+    this.pIn = wasmAlloc(wasm, n)
+    this.pOut = wasmAlloc(wasm, n)
+    this.cap = n
+  }
+
+  private freeScratch(): void {
+    if (this.cap === 0) return
+    wasmFree(wasm, this.pIn, this.cap)
+    wasmFree(wasm, this.pOut, this.cap)
+    this.cap = 0
   }
 }

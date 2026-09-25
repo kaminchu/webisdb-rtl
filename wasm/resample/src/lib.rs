@@ -104,6 +104,45 @@ fn sinc(x: f64) -> f64 {
     px.sin() / px
 }
 
+/// Dot product of one polyphase tap window against the coefficient table.
+/// The accumulation order is fixed regardless of how the stream is chunked, so
+/// results stay chunk-size invariant like the scalar reference.
+#[inline]
+fn fir_dot(input: &[f32], coef: &[f32], taps: usize) -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use core::arch::wasm32::*;
+        let mut acc = f64x2_splat(0.0);
+        let mut k = 0usize;
+        unsafe {
+            while k + 4 <= taps {
+                let c = v128_load(coef.as_ptr().add(k) as *const v128);
+                let lo = f64x2_promote_low_f32x4(c);
+                let hi = f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 0, 0>(c, c));
+                let x = v128_load(input.as_ptr().add(k) as *const v128);
+                let xlo = f64x2_promote_low_f32x4(x);
+                let xhi = f64x2_promote_low_f32x4(i32x4_shuffle::<2, 3, 0, 0>(x, x));
+                acc = f64x2_add(acc, f64x2_add(f64x2_mul(xlo, lo), f64x2_mul(xhi, hi)));
+                k += 4;
+            }
+        }
+        let mut sum = f64x2_extract_lane::<0>(acc) + f64x2_extract_lane::<1>(acc);
+        while k < taps {
+            sum += input[k] as f64 * coef[k] as f64;
+            k += 1;
+        }
+        return sum;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut sum = 0.0f64;
+        for k in 0..taps {
+            sum += input[k] as f64 * coef[k] as f64;
+        }
+        sum
+    }
+}
+
 fn build_table(cutoff_norm: f64) -> Vec<f32> {
     let taps = 2 * HALF_TAPS;
     let mut table = vec![0.0f32; PHASES * taps];
@@ -218,13 +257,8 @@ impl FractionalResampler {
             let start = base_idx as usize;
             let input_re = &self.buf_re[start..start + taps];
             let input_im = &self.buf_im[start..start + taps];
-            let mut sr = 0.0f64;
-            let mut si = 0.0f64;
-            for k in 0..taps {
-                let coef = coefficients[k] as f64;
-                sr += input_re[k] as f64 * coef;
-                si += input_im[k] as f64 * coef;
-            }
+            let sr = fir_dot(input_re, coefficients, taps);
+            let si = fir_dot(input_im, coefficients, taps);
             self.out_re.push(sr as f32);
             self.out_im.push(si as f32);
             self.phase += self.step_frac;
