@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AvcConfig } from '../models/media'
 import {
   VideoStreamDecoder,
@@ -83,6 +83,40 @@ describe('isKeyframe', () => {
 })
 
 describe('VideoStreamDecoder', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('stops recreating once the browser rejects the codec configuration', async () => {
+    let configureCount = 0
+    vi.stubGlobal(
+      'VideoDecoder',
+      class {
+        private readonly handleError: (error: DOMException) => void
+        constructor(init: VideoDecoderInit) {
+          this.handleError = init.error
+        }
+        configure() {
+          configureCount++
+          const error = new DOMException('Unknown or ambiguous codec name.', 'NotSupportedError')
+          queueMicrotask(() => this.handleError(error))
+        }
+        close() {}
+      },
+    )
+    const errors: Error[] = []
+    const decoder = new VideoStreamDecoder({
+      onFrame: () => {},
+      onError: (error) => errors.push(error),
+    })
+    decoder.configure({ codec: 'avc1.42E01E' })
+    await Promise.resolve()
+    expect(configureCount).toBe(1)
+    expect(errors).toHaveLength(1)
+    decoder.reset()
+    await Promise.resolve()
+    expect(configureCount).toBe(1)
+    decoder.close()
+  })
+
   it('is unsupported without WebCodecs', () => {
     const decoder = new VideoStreamDecoder({ onFrame: () => {} })
     expect(decoder.supported).toBe(false)

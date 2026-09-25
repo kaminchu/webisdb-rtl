@@ -16,6 +16,17 @@ function hexByte(value: number): string {
   return value.toString(16).padStart(2, '0').toUpperCase()
 }
 
+/**
+ * True when a VideoDecoder error means the configuration itself was rejected
+ * (unsupported/unknown codec). Such errors arrive through the async error
+ * callback in some browsers and would otherwise trigger an endless
+ * reconfigure/error loop.
+ */
+function isConfigError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : undefined
+  return name === 'NotSupportedError' || name === 'TypeError'
+}
+
 /** Build an RFC 6381 `avc1.PPCCLL` codec string from an AVC descriptor. */
 export function codecStringFromAvcConfig(config: AvcConfig): string {
   return `avc1.${hexByte(config.avcProfileIndication)}${hexByte(
@@ -117,6 +128,7 @@ export class VideoStreamDecoder {
   private readonly onError: ((error: Error) => void) | undefined
   private decoder: VideoDecoder | null = null
   private config: VideoDecoderConfig | null = null
+  private configRejected = false
   private avcc = false
   private needsKey = true
 
@@ -137,6 +149,7 @@ export class VideoStreamDecoder {
     this.config = toVideoDecoderConfig(config)
     this.avcc = this.config.description !== undefined
     this.needsKey = true
+    this.configRejected = false
     if (!this.supported) return
     this.recreate()
   }
@@ -170,11 +183,12 @@ export class VideoStreamDecoder {
   close(): void {
     this.closeDecoder()
     this.config = null
+    this.configRejected = false
   }
 
   private recreate(): boolean {
     this.closeDecoder()
-    if (!this.supported || !this.config) return false
+    if (!this.supported || !this.config || this.configRejected) return false
     try {
       this.decoder = new VideoDecoder({
         output: (frame) => this.emitFrame(frame),
@@ -185,6 +199,7 @@ export class VideoStreamDecoder {
     } catch (error) {
       // A rejected configuration is permanent: retrying it forever would spin.
       this.decoder = null
+      if (isConfigError(error)) this.configRejected = true
       this.reportError(error)
       return false
     }
@@ -202,7 +217,14 @@ export class VideoStreamDecoder {
   private handleError(error: unknown): void {
     this.reportError(error)
     this.needsKey = true
-    if (this.supported && this.config) this.recreate()
+    if (isConfigError(error)) {
+      // The codec/description is rejected for good; recreating the decoder
+      // would immediately fail again and flood the log.
+      this.configRejected = true
+      this.closeDecoder()
+      return
+    }
+    if (this.supported && this.config && !this.configRejected) this.recreate()
   }
 
   private reportError(error: unknown): void {

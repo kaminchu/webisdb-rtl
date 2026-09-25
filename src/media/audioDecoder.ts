@@ -22,6 +22,17 @@ const LEAD_SEC = 0.05
 const DEFAULT_MAX_QUEUE_SEC = 1
 const DEFAULT_MAX_QUEUE_LENGTH = 128
 
+/**
+ * True when an AudioDecoder error means the configuration itself was rejected
+ * (unsupported/unknown codec). Such errors arrive through the async error
+ * callback in some browsers and would otherwise trigger an endless
+ * reconfigure/error loop.
+ */
+function isConfigError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : undefined
+  return name === 'NotSupportedError' || name === 'TypeError'
+}
+
 /** HE-AAC / HE-AACv2 (SBR / PS) codec strings used by one-seg audio. */
 export function isHeAac(codec: string): boolean {
   const normalized = codec.toLowerCase()
@@ -49,6 +60,7 @@ export class AudioStreamDecoder {
   private readonly queue: AudioBufferSourceNode[] = []
   private decoder: AudioDecoder | null = null
   private config: AudioDecoderConfig | null = null
+  private configRejected = false
   private baseContextTime: number | null = null
   private basePtsSec: number | null = null
   private scheduledUntil = 0
@@ -111,6 +123,7 @@ export class AudioStreamDecoder {
     }
     if (config.description) result.description = config.description
     this.config = result
+    this.configRejected = false
     if (!this.supported) return
     this.recreate()
   }
@@ -152,6 +165,7 @@ export class AudioStreamDecoder {
     this.stopQueued()
     this.closeDecoder()
     this.config = null
+    this.configRejected = false
     this.baseContextTime = null
     this.basePtsSec = null
     this.scheduledUntil = 0
@@ -160,7 +174,7 @@ export class AudioStreamDecoder {
 
   private recreate(): boolean {
     this.closeDecoder()
-    if (!this.supported || !this.config) return false
+    if (!this.supported || !this.config || this.configRejected) return false
     try {
       this.decoder = new AudioDecoder({
         output: (data) => this.onAudioData(data),
@@ -171,6 +185,7 @@ export class AudioStreamDecoder {
     } catch (error) {
       // A rejected configuration is permanent: retrying it forever would spin.
       this.decoder = null
+      if (isConfigError(error)) this.configRejected = true
       this.reportError(error)
       return false
     }
@@ -280,7 +295,14 @@ export class AudioStreamDecoder {
 
   private handleError(error: unknown): void {
     this.reportError(error)
-    if (this.supported && this.config) this.recreate()
+    if (isConfigError(error)) {
+      // The codec/description is rejected for good; recreating the decoder
+      // would immediately fail again and flood the log.
+      this.configRejected = true
+      this.closeDecoder()
+      return
+    }
+    if (this.supported && this.config && !this.configRejected) this.recreate()
   }
 
   /** True while a decoder instance exists, even if it rejects samples later. */

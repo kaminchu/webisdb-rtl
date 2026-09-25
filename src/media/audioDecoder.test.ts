@@ -144,6 +144,45 @@ describe('audio scheduling', () => {
 })
 
 describe('AudioStreamDecoder', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('stops recreating once the browser rejects the codec configuration', async () => {
+    let configureCount = 0
+    vi.stubGlobal(
+      'AudioDecoder',
+      class {
+        private readonly handleError: (error: DOMException) => void
+        constructor(init: AudioDecoderInit) {
+          this.handleError = init.error
+        }
+        configure() {
+          configureCount++
+          const error = new DOMException('Unknown or ambiguous codec name.', 'NotSupportedError')
+          queueMicrotask(() => this.handleError(error))
+        }
+        close() {}
+      },
+    )
+    const context = {
+      currentTime: 0,
+      state: 'running',
+      createGain: () => ({ connect: vi.fn(), gain: { value: 1 } }),
+    }
+    const errors: Error[] = []
+    const decoder = new AudioStreamDecoder({
+      audioContext: context as unknown as AudioContext,
+      onError: (error) => errors.push(error),
+    })
+    decoder.configure({ codec: 'mp4a.40.5', sampleRate: 48_000, numberOfChannels: 2 })
+    await Promise.resolve()
+    expect(configureCount).toBe(1)
+    expect(errors).toHaveLength(1)
+    decoder.reset()
+    await Promise.resolve()
+    expect(configureCount).toBe(1)
+    decoder.close()
+  })
+
   it('is unsupported without WebCodecs or AudioContext', () => {
     const decoder = new AudioStreamDecoder()
     expect(decoder.supported).toBe(false)
