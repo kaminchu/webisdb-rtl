@@ -204,6 +204,7 @@ describe('decodeCaptionPayload', () => {
 interface DrawCall {
   method: string
   fillStyle: string
+  args: unknown[]
 }
 
 function fakeContext(): { context: CanvasRenderingContext2D; calls: DrawCall[] } {
@@ -220,8 +221,7 @@ function fakeContext(): { context: CanvasRenderingContext2D; calls: DrawCall[] }
   const record =
     (method: string) =>
     (...args: unknown[]) => {
-      calls.push({ method, fillStyle: state.fillStyle })
-      void args
+      calls.push({ method, fillStyle: state.fillStyle, args })
     }
   const context = {
     save: record('save'),
@@ -282,6 +282,57 @@ function fakeContext(): { context: CanvasRenderingContext2D; calls: DrawCall[] }
 }
 
 describe('CaptionRenderer', () => {
+  it('anchors unpositioned text at the bottom with a scaled margin', () => {
+    const renderer = new CaptionRenderer()
+    renderer.update(captionPes(dataGroup(STATEMENT, statementData([0x0c, 0xa4, 0xb3]))))
+    const { context, calls } = fakeContext()
+    renderer.draw(context, 640, 360)
+    expect(calls.find((call) => call.method === 'fillText')?.args).toEqual(['こ', 18, 330])
+  })
+
+  it.each([
+    [0xa4, 0xb3, 0x0d, 0xa4, 0xc1],
+    [...Array.from({ length: 16 }, () => [0xa4, 0xb3]).flat(), 0xa4, 0xc1],
+  ])('keeps both lines visible for line breaks and wrapping: %j', (...text) => {
+    const renderer = new CaptionRenderer()
+    renderer.update(captionPes(dataGroup(STATEMENT, statementData([0x0c, ...text]))))
+    const { context, calls } = fakeContext()
+    renderer.draw(context, 320, 180)
+    const chars = calls.filter((call) => call.method === 'fillText')
+    expect(chars[0].args).toEqual(['こ', 9, 141])
+    expect(chars.at(-1)?.args).toEqual(['ち', 9, 165])
+  })
+
+  it.each([
+    { name: 'APS', position: [0x1c, 0x06, 0x03], x: 69, y: 153 },
+    { name: 'ACPS', position: [0x9b, 0x33, 0x3b, 0x31, 0x30, 0x30, 0x61], x: 12, y: 85 },
+    { name: 'non-zero SDP', position: [0x9b, 0x30, 0x3b, 0x32, 0x30, 0x5f], x: 9, y: 29 },
+  ])('preserves explicit $name positioning', ({ position, x, y }) => {
+    const renderer = new CaptionRenderer()
+    renderer.update(
+      captionPes(dataGroup(STATEMENT, statementData([0x0c, ...position, 0xa4, 0xb3]))),
+    )
+    const { context, calls } = fakeContext()
+    renderer.draw(context, 320, 180)
+    expect(calls.find((call) => call.method === 'fillText')?.args).toEqual(['こ', x, y])
+    renderer.update(captionPes(dataGroup(STATEMENT, statementData([0x0c, 0xa4, 0xc1]))))
+    calls.length = 0
+    renderer.draw(context, 320, 180)
+    expect(calls.find((call) => call.method === 'fillText')?.args).toEqual(['ち', 9, 165])
+  })
+
+  it('treats the default display position as unpositioned', () => {
+    const renderer = new CaptionRenderer()
+    renderer.update(
+      captionPes(
+        dataGroup(STATEMENT, statementData([0x0c, 0x9b, 0x30, 0x3b, 0x30, 0x5f, 0xa4, 0xb3])),
+      ),
+    )
+    const { context, calls } = fakeContext()
+    renderer.draw(context, 320, 180)
+    expect(calls.find((call) => call.method === 'fillText')?.args).toEqual(['こ', 9, 165])
+  })
+
   it.each([0xbd, 0xbf])('renders Profile C captions from TS with stream_id %i', (streamId) => {
     const renderer = new CaptionRenderer()
     const received: Uint8Array[] = []

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PesPacket } from '../models/media'
+import { TransportStream } from '../ts/TransportStream'
+import { buildPes, buildPmt, pesToPackets, sectionToPackets } from '../ts/sectionBuilder'
 import { OneSegPlayer } from './player'
 
 function packet(kind: PesPacket['kind'], pts?: number): PesPacket {
@@ -177,8 +179,13 @@ function setup(bufferSec = 0) {
   vi.stubGlobal('cancelAnimationFrame', cancel)
   const canvas = document.createElement('canvas')
   const draw = vi.fn()
+  const fillText = vi.fn()
   vi.spyOn(canvas, 'getContext').mockReturnValue({
     drawImage: draw,
+    save: vi.fn(),
+    restore: vi.fn(),
+    strokeText: vi.fn(),
+    fillText,
   } as unknown as CanvasRenderingContext2D)
   let now = 0
   const player = new OneSegPlayer(canvas, { clock: () => now, bufferSec })
@@ -196,6 +203,7 @@ function setup(bufferSec = 0) {
   return {
     player,
     draw,
+    fillText,
     frames,
     cancel,
     emit: (frame: VideoFrame) => output(frame),
@@ -210,6 +218,37 @@ function setup(bufferSec = 0) {
 
 describe('OneSegPlayer frame presentation', () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it('draws a caption identified by the broadcast PMT descriptor over video', () => {
+    const { player, fillText, frames, emit, tick } = setup()
+    player.setSubtitlesEnabled(true)
+    const stream = new TransportStream({ onPes: (pes) => player.pushPes(pes) })
+    stream.push(
+      sectionToPackets(
+        buildPmt({
+          programNumber: 32128,
+          pcrPid: 1535,
+          streams: [
+            {
+              pid: 1415,
+              streamType: 0x06,
+              // ARIB STD-B10: stream_identifier (0x52), data_component (0xfd).
+              descriptors: [0x52, 1, 0x87, 0xfd, 3, 0, 0x12, 0xad],
+            },
+          ],
+        }),
+        0x1fc8,
+      ),
+    )
+    const payload = Uint8Array.from([
+      0x80, 0xff, 0xf0, 4, 0, 0, 0, 12, 0x3f, 0, 0, 8, 0x1f, 0x20, 0, 0, 3, 0x0c, 0xa4, 0xb3, 0, 0,
+    ])
+    stream.push(pesToPackets(1415, buildPes(0xbd, payload, { pts: 0 })))
+    frames.slice(0, 1).forEach(emit)
+    tick(0.001)
+    expect(fillText).toHaveBeenCalledWith('こ', 9, 165)
+    player.close()
+  })
 
   it('presents a burst of 15 fps frames individually without dropping the oldest eight', () => {
     const { player, draw, frames, emit, tick } = setup()

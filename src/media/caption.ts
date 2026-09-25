@@ -28,6 +28,7 @@ const CHAR_WIDTH = 18
 const CHAR_HEIGHT = 18
 const CHAR_H_SPACING = 2
 const CHAR_V_SPACING = 6
+const BOTTOM_MARGIN = 6
 
 /** Profile 0..4 CLUT, `0xRRGGBBAA`. */
 const CLUT: readonly (readonly number[])[] = [
@@ -152,6 +153,7 @@ export interface CaptionFrame {
   width: number
   height: number
   chars: CaptionChar[]
+  hasExplicitPosition: boolean
   /** PES PTS of the statement in 90 kHz units; null when the source has none. */
   startPts90k: number | null
   /** Wall-clock presentation time from STM (asynchronous PES); null otherwise. */
@@ -279,6 +281,7 @@ class CaptionDecoder {
   private activeX = 0
   private activeY = 0
   private activeInited = false
+  private hasExplicitPosition = false
   private produced = false
   private tmd = 0
   private stmMs: number | null = null
@@ -306,6 +309,7 @@ class CaptionDecoder {
       width: this.planeWidth,
       height: this.planeHeight,
       chars: [...this.chars],
+      hasExplicitPosition: this.hasExplicitPosition,
       startPts90k: null,
       startWallMs: null,
       colorMap: this.snapshotColorMap(),
@@ -470,6 +474,7 @@ class CaptionDecoder {
     this.activeX = 0
     this.activeY = 0
     this.activeInited = false
+    this.hasExplicitPosition = false
   }
 
   private sectionWidth(): number {
@@ -592,6 +597,7 @@ class CaptionDecoder {
         this.move(token.params[0]! & 0x3f, 0)
         break
       case 0x1c:
+        this.hasExplicitPosition = true
         this.setActiveCell(token.params[1]! & 0x3f, token.params[0]! & 0x3f)
         break
       default:
@@ -678,9 +684,11 @@ class CaptionDecoder {
       case 0x5f:
         this.displayStartX = params[0] ?? 0
         if (params.length >= 2) this.displayStartY = params[1]!
+        if (this.displayStartX !== 0 || this.displayStartY !== 0) this.hasExplicitPosition = true
         if (!this.activeInited) this.setActiveCell(0, 0)
         break
       case 0x61:
+        this.hasExplicitPosition = true
         this.setActiveDot(params[0] ?? 0, params[1] ?? 0)
         break
       case 0x63:
@@ -858,6 +866,11 @@ export class CaptionRenderer {
 
     const scaleX = width / frame.width
     const scaleY = height / frame.height
+    // One-seg standards omit positioning for normal subtitles; anchor the block to the bottom.
+    const bottom = frame.chars.reduce((max, char) => Math.max(max, char.y + char.height), 0)
+    const offsetY = frame.hasExplicitPosition
+      ? 0
+      : Math.max(0, frame.height - BOTTOM_MARGIN - bottom)
     const now = this.clock()
     context.save()
     context.textAlign = 'center'
@@ -867,7 +880,7 @@ export class CaptionRenderer {
     for (const char of frame.chars) {
       if (char.flashing && Math.floor(now / 500) % 2 === 1) continue
       const x = char.x * scaleX
-      const y = char.y * scaleY
+      const y = (char.y + offsetY) * scaleY
       const w = char.width * scaleX
       const h = char.height * scaleY
       if (char.background.a > 0) {
