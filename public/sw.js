@@ -42,6 +42,24 @@ function isChannelData(url) {
   return url.pathname.includes('/data/japan/') && url.pathname.endsWith('.json')
 }
 
+// GitHub Pages cannot serve COOP/COEP headers, so inject them here to enable
+// SharedArrayBuffer / WebAssembly threads (see registerServiceWorker).
+function addIsolationHeaders(response) {
+  if (!response || response.status === 0 || response.type === 'opaque') return response
+  const headers = new Headers(response.headers)
+  if (!headers.has('Cross-Origin-Opener-Policy')) {
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+  }
+  if (!headers.has('Cross-Origin-Embedder-Policy')) {
+    headers.set('Cross-Origin-Embedder-Policy', 'require-corp')
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName)
   const cached = await cache.match(request)
@@ -73,28 +91,31 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return
 
   if (request.mode === 'navigate') {
-    event.respondWith(networkFirstNavigation(request))
+    event.respondWith(networkFirstNavigation(request).then(addIsolationHeaders))
     return
   }
 
   if (isChannelData(url)) {
-    event.respondWith(staleWhileRevalidate(request, DATA_CACHE))
+    event.respondWith(staleWhileRevalidate(request, DATA_CACHE).then(addIsolationHeaders))
     return
   }
 
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached
-      return fetch(request)
-        .then((response) => {
-          if (response && response.ok && url.pathname.startsWith(BASE)) {
-            const copy = response.clone()
-            caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy))
-          }
-          return response
-        })
-        .catch(() => cached || Response.error())
-    }),
+    caches
+      .match(request)
+      .then((cached) => {
+        if (cached) return cached
+        return fetch(request)
+          .then((response) => {
+            if (response && response.ok && url.pathname.startsWith(BASE)) {
+              const copy = response.clone()
+              caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy))
+            }
+            return response
+          })
+          .catch(() => cached || Response.error())
+      })
+      .then(addIsolationHeaders),
   )
 })
 

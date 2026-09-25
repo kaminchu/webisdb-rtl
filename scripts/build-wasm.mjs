@@ -4,11 +4,19 @@
  * TypeScript module so it can be loaded synchronously in workers, tests and the
  * browser without any asset/fetch plumbing.
  *
+ * Each crate is built twice:
+ *  - the default single-thread kernel on stable, embedded as `<crate>.bytes.ts`;
+ *  - if the crate declares a `threads` feature, a Rayon-enabled kernel on a
+ *    pinned nightly (`-Z build-std`) through `wasm-bindgen --target web`, emitted
+ *    to `src/dsp/wasm/pkg/` so Vite can bundle the thread-pool worker.
+ *
  * Usage:
  *   node scripts/build-wasm.mjs <crate>   # build wasm/<crate>
  *   node scripts/build-wasm.mjs --all     # build every wasm/* crate
  *
- * The generated file is `src/dsp/wasm/<crate>.bytes.ts` exporting `wasmBase64`.
+ * Requires the `wasm-bindgen` CLI matching the `wasm-bindgen` crate version on
+ * PATH (or `WASM_BINDGEN=/path/to/wasm-bindgen`) for the threaded build, plus
+ * `rustup toolchain install nightly-2025-11-15 --component rust-src`.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -21,12 +29,24 @@ const wasmDir = resolve(root, 'wasm')
 const outDir = resolve(root, 'src/dsp/wasm')
 const targetDir = resolve(wasmDir, 'target')
 const wasmOpt = resolve(root, 'node_modules/.bin/wasm-opt')
+const THREAD_TOOLCHAIN = 'nightly-2025-11-15'
 
 const SIMD_FLAG = '-C target-feature=+simd128'
+const THREAD_FLAGS = [
+  '-C target-feature=+simd128,+atomics,+bulk-memory',
+  '-C link-arg=--shared-memory',
+  '-C link-arg=--max-memory=1073741824',
+  '-C link-arg=--import-memory',
+  '-C link-arg=--export=__wasm_init_tls',
+  '-C link-arg=--export=__tls_size',
+  '-C link-arg=--export=__tls_align',
+  '-C link-arg=--export=__tls_base',
+].join(' ')
 
-function rustFlags() {
+function rustFlags(extra = '') {
   const existing = process.env.RUSTFLAGS ?? ''
-  return existing.includes('+simd128') ? existing : `${existing} ${SIMD_FLAG}`.trim()
+  const parts = [existing, SIMD_FLAG, extra].filter(Boolean)
+  return parts.join(' ')
 }
 
 function crateName(dir) {
@@ -36,26 +56,42 @@ function crateName(dir) {
   return match[1]
 }
 
-function optimize(wasmPath) {
+function hasThreadsFeature(dir) {
+  const manifest = readFileSync(resolve(dir, 'Cargo.toml'), 'utf8')
+  return /^\s*threads\s*=/m.test(manifest) || /^\s*threads\s*=\s*\[/m.test(manifest)
+}
+
+function wasmBindgenBin() {
+  const bin = process.env.WASM_BINDGEN ?? 'wasm-bindgen'
+  try {
+    const version = execFileSync(bin, ['--version'], { encoding: 'utf8' }).trim()
+    return { bin, version }
+  } catch {
+    throw new Error(
+      `wasm-bindgen CLI not found (looked for "${bin}").\n` +
+        `Install the matching version, e.g. cargo install wasm-bindgen-cli --version <crate version>,\n` +
+        `or set WASM_BINDGEN to the binary path.`,
+    )
+  }
+}
+
+function optimize(wasmPath, { threads = false } = {}) {
   if (!existsSync(wasmOpt)) {
     console.warn(`wasm-opt not found at ${wasmOpt}; embedding unoptimized template`)
     return readFileSync(wasmPath)
   }
+  const args = [
+    wasmPath,
+    '-O3',
+    '--enable-simd',
+    '--enable-bulk-memory',
+    '--enable-nontrapping-float-to-int',
+    '--strip-debug',
+  ]
+  if (threads) args.push('--enable-threads')
   const optimized = `${wasmPath}.opt.wasm`
-  execFileSync(
-    wasmOpt,
-    [
-      wasmPath,
-      '-O3',
-      '--enable-simd',
-      '--enable-bulk-memory',
-      '--enable-nontrapping-float-to-int',
-      '--strip-debug',
-      '-o',
-      optimized,
-    ],
-    { stdio: 'inherit' },
-  )
+  args.push('-o', optimized)
+  execFileSync(wasmOpt, args, { stdio: 'inherit' })
   const bytes = readFileSync(optimized)
   rmSync(optimized, { force: true })
   return bytes
@@ -91,16 +127,79 @@ function build(name) {
   )
 }
 
+function buildThreaded(name) {
+  const dir = resolve(wasmDir, name)
+  const pkg = crateName(dir)
+  const { bin, version } = wasmBindgenBin()
+
+  execFileSync(
+    `cargo`,
+    [
+      `+${THREAD_TOOLCHAIN}`,
+      'build',
+      '--release',
+      '--target',
+      'wasm32-unknown-unknown',
+      '--features',
+      'threads',
+      '-Z',
+      'build-std=panic_abort,std',
+    ],
+    {
+      cwd: dir,
+      stdio: 'inherit',
+      env: { ...process.env, CARGO_TARGET_DIR: targetDir, RUSTFLAGS: rustFlags(THREAD_FLAGS) },
+    },
+  )
+
+  const wasmPath = resolve(targetDir, 'wasm32-unknown-unknown/release', `${pkg}.wasm`)
+  const pkgDir = resolve(outDir, 'pkg')
+  rmSync(pkgDir, { recursive: true, force: true })
+  mkdirSync(pkgDir, { recursive: true })
+  execFileSync(bin, ['--target', 'web', '--out-dir', pkgDir, '--out-name', name, wasmPath], {
+    stdio: 'inherit',
+  })
+  writeFileSync(
+    resolve(pkgDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: `webisdb-${name}-wasm`,
+        version: '0.0.0',
+        private: true,
+        type: 'module',
+        main: `./${name}.js`,
+        module: `./${name}.js`,
+        types: `./${name}.d.ts`,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+
+  const bgWasm = resolve(pkgDir, `${name}_bg.wasm`)
+  const optimized = optimize(bgWasm, { threads: true })
+  writeFileSync(bgWasm, optimized)
+
+  console.log(
+    `built wasm/${name} threads (${version}) -> src/dsp/wasm/pkg/${name}.js + ${name}_bg.wasm`,
+  )
+}
+
 const args = process.argv.slice(2)
 if (args.length === 0) {
-  console.error('usage: node scripts/build-wasm.mjs <crate>|--all')
+  console.error('usage: node scripts/build-wasm.mjs <crate>|--all [--threads]')
   process.exit(1)
 }
+const threadsOnly = args.includes('--threads')
 const names =
   args[0] === '--all'
     ? readdirSync(wasmDir, { withFileTypes: true })
         .filter((e) => e.isDirectory() && existsSync(resolve(wasmDir, e.name, 'Cargo.toml')))
         .map((e) => e.name)
         .toSorted()
-    : args
-for (const name of names) build(name)
+    : args.filter((a) => !a.startsWith('--'))
+for (const name of names) {
+  const dir = resolve(wasmDir, name)
+  if (!threadsOnly) build(name)
+  if (hasThreadsFeature(dir)) buildThreaded(name)
+}

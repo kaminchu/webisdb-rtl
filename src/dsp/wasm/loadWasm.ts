@@ -80,6 +80,10 @@ export class WasmHeap {
     return new Int8Array(this.memory.buffer, ptr, len)
   }
 
+  i32(ptr: number, len: number): Int32Array {
+    return new Int32Array(this.memory.buffer, ptr, len)
+  }
+
   f64(ptr: number, len: number): Float64Array {
     return new Float64Array(this.memory.buffer, ptr, len)
   }

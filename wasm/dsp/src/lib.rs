@@ -18,6 +18,9 @@ mod resample;
 mod tmcc;
 mod viterbi;
 
+#[cfg(feature = "threads")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 use core::alloc::Layout;
 use std::alloc::{alloc, dealloc};
 

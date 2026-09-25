@@ -6,7 +6,10 @@
 
 use core::f64::consts::PI;
 
-fn transform(re: &mut [f32], im: &mut [f32], sign: f64) {
+#[cfg(feature = "threads")]
+use rayon::prelude::*;
+
+pub(crate) fn transform(re: &mut [f32], im: &mut [f32], sign: f64) {
     let n = re.len();
     if n <= 1 {
         return;
@@ -84,4 +87,83 @@ pub extern "C" fn fft_inverse(re_ptr: *mut f32, im_ptr: *mut f32, n: usize) {
         re[i] = (re[i] as f64 * scale) as f32;
         im[i] = (im[i] as f64 * scale) as f32;
     }
+}
+
+/// Forward-transform several length-`n` windows `starts[i]` of `buf` into
+/// `out_re`/`out_im` (stride `n`). Windows that do not fit are zeroed.
+///
+/// This is the only kernel exposed to Rayon: the locked front end calls it once
+/// per host chunk so all symbol FFTs of the chunk run on the thread pool, while
+/// the stateful TMCC/demap pass stays sequential.
+pub(crate) fn batch_windows(
+    buf_re: &[f32],
+    buf_im: &[f32],
+    starts: &[i32],
+    n: usize,
+    out_re: &mut [f32],
+    out_im: &mut [f32],
+) {
+    if n == 0 {
+        return;
+    }
+    let count = starts
+        .len()
+        .min(out_re.len() / n)
+        .min(out_im.len() / n);
+    let out_re = &mut out_re[..count * n];
+    let out_im = &mut out_im[..count * n];
+
+    let one = |i: usize, ore: &mut [f32], oim: &mut [f32]| {
+        let start = starts[i] as usize;
+        if start + n <= buf_re.len() && start + n <= buf_im.len() {
+            ore.copy_from_slice(&buf_re[start..start + n]);
+            oim.copy_from_slice(&buf_im[start..start + n]);
+            transform(ore, oim, -1.0);
+        } else {
+            ore.fill(0.0);
+            oim.fill(0.0);
+        }
+    };
+
+    #[cfg(feature = "threads")]
+    out_re
+        .par_chunks_mut(n)
+        .zip(out_im.par_chunks_mut(n))
+        .enumerate()
+        .for_each(|(i, (ore, oim))| one(i, ore, oim));
+
+    #[cfg(not(feature = "threads"))]
+    for (i, (ore, oim)) in out_re.chunks_mut(n).zip(out_im.chunks_mut(n)).enumerate() {
+        one(i, ore, oim);
+    }
+}
+
+/// FFI wrapper around [`batch_windows`] for the acquisition scan.
+#[no_mangle]
+pub extern "C" fn fft_batch(
+    re_ptr: *const f32,
+    im_ptr: *const f32,
+    total: usize,
+    starts_ptr: *const i32,
+    count: usize,
+    n: usize,
+    out_re_ptr: *mut f32,
+    out_im_ptr: *mut f32,
+) {
+    if re_ptr.is_null()
+        || im_ptr.is_null()
+        || starts_ptr.is_null()
+        || out_re_ptr.is_null()
+        || out_im_ptr.is_null()
+        || n == 0
+        || count == 0
+    {
+        return;
+    }
+    let buf_re = unsafe { core::slice::from_raw_parts(re_ptr, total) };
+    let buf_im = unsafe { core::slice::from_raw_parts(im_ptr, total) };
+    let starts = unsafe { core::slice::from_raw_parts(starts_ptr, count) };
+    let out_re = unsafe { core::slice::from_raw_parts_mut(out_re_ptr, count * n) };
+    let out_im = unsafe { core::slice::from_raw_parts_mut(out_im_ptr, count * n) };
+    batch_windows(buf_re, buf_im, starts, n, out_re, out_im);
 }
