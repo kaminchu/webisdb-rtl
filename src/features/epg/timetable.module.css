@@ -1,0 +1,194 @@
+.program {
+  --program-accent: var(--color-accent);
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--program-accent) 14%, var(--color-bg-input));
+  color: var(--color-text);
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.program:hover {
+  z-index: 6;
+  border-color: var(--program-accent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+}
+
+.running {
+  border-color: var(--program-accent);
+  background: color-mix(in srgb, var(--program-accent) 26%, var(--color-bg-input));
+}
+
+.past {
+  opacity: 0.5;
+}
+
+.compact {
+  left: 1px;
+  right: 1px;
+}
+
+.static {
+  pointer-events: none;
+  cursor: default;
+}
+
+.highlight {
+  flex: none;
+  width: 4px;
+  background: var(--program-accent);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: 2px 5px;
+  overflow: hidden;
+}
+
+.time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.description {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--color-text-muted);
+  overflow: hidden;
+}
+
+.compact .content {
+  padding: 1px 4px;
+}
+
+.compact .title {
+  font-size: 11px;
+}
+
+.compact .time {
+  font-size: 9px;
+}
+
+.compact .description {
+  display: none;
+}
+
+.hourLine,
+.halfHourLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.halfHourLine {
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.hourLine {
+  border-top: 1px solid var(--color-border);
+}
+
+.nowLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 12;
+  height: 0;
+  border-top: 2px solid var(--color-bad);
+  pointer-events: none;
+}
+
+.nowDot {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-bad);
+}
+
+.genre0 {
+  --program-accent: var(--color-accent);
+}
+
+.genre1 {
+  --program-accent: var(--color-good);
+}
+
+.genre2 {
+  --program-accent: var(--color-warn);
+}
+
+.genre3 {
+  --program-accent: var(--color-bad);
+}
+
+.genre4 {
+  --program-accent: var(--color-accent-strong);
+}
+
+.genre5 {
+  --program-accent: var(--color-warn);
+}
+
+.genre6 {
+  --program-accent: var(--color-bad);
+}
+
+.genre7 {
+  --program-accent: var(--color-accent);
+}
+
+.genre8 {
+  --program-accent: var(--color-good);
+}
+
+.genre9 {
+  --program-accent: var(--color-bad);
+}
+
+.genre10 {
+  --program-accent: var(--color-accent-strong);
+}
+
+.genre11 {
+  --program-accent: var(--color-good);
+}
+
+.genre12 {
+  --program-accent: var(--color-accent);
+}
+
+.genre13 {
+  --program-accent: var(--color-accent-strong);
+}
+
+.genre14 {
+  --program-accent: var(--color-warn);
+}
+
+.genre15 {
+  --program-accent: var(--color-accent);
+}
