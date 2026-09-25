@@ -182,6 +182,34 @@ describe('WasmFractionalResampler', () => {
 })
 
 describe('WasmNcoCorrector', () => {
+  it.each([0, 0.01, 1234.5, -275_000, 599_999])(
+    'bounds oscillator drift over long blocks at %s Hz',
+    (offset) => {
+      const n = 262_147
+      const re = deterministic(n, 123)
+      const im = deterministic(n, 456)
+      const wasm = new WasmNcoCorrector(offset, SRC_RATE)
+      const ts = new NcoCorrector(offset, SRC_RATE)
+      try {
+        let maxError = 0
+        for (const [a, b] of chunks(n, [65_537, 1, 255, 257, 32_768])) {
+          const wr = re.slice(a, b)
+          const wi = im.slice(a, b)
+          const tr = re.slice(a, b)
+          const ti = im.slice(a, b)
+          wasm.process(wr, wi)
+          ts.process(tr, ti)
+          for (let i = 0; i < wr.length; i++) {
+            maxError = Math.max(maxError, Math.abs(wr[i] - tr[i]), Math.abs(wi[i] - ti[i]))
+          }
+        }
+        expect(maxError).toBeLessThan(2e-7)
+      } finally {
+        wasm.dispose()
+      }
+    },
+  )
+
   it('matches NcoCorrector across uneven chunks', () => {
     const n = 4000
     const re = deterministic(n, 123)

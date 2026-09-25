@@ -214,12 +214,16 @@ impl FractionalResampler {
             }
             let base_idx = i0 - (HALF_TAPS as i64 - 1);
             let off = ph as usize * taps;
+            let coefficients = &self.table[off..off + taps];
+            let start = base_idx as usize;
+            let input_re = &self.buf_re[start..start + taps];
+            let input_im = &self.buf_im[start..start + taps];
             let mut sr = 0.0f64;
             let mut si = 0.0f64;
             for k in 0..taps {
-                let coef = self.table[off + k] as f64;
-                sr += self.buf_re[base_idx as usize + k] as f64 * coef;
-                si += self.buf_im[base_idx as usize + k] as f64 * coef;
+                let coef = coefficients[k] as f64;
+                sr += input_re[k] as f64 * coef;
+                si += input_im[k] as f64 * coef;
             }
             self.out_re.push(sr as f32);
             self.out_im.push(si as f32);
@@ -336,9 +340,16 @@ impl NcoCorrector {
     fn process(&mut self, re: &mut [f32], im: &mut [f32]) {
         let step = (-2.0 * PI * self.offset_hz) / self.sample_rate_hz;
         let mut phase = self.phase;
+        let step_c = step.cos();
+        let step_s = step.sin();
+        let mut c = 0.0;
+        let mut s = 0.0;
         for i in 0..re.len() {
-            let c = phase.cos();
-            let s = phase.sin();
+            // Re-anchor the recursive oscillator to bound amplitude/phase drift.
+            if i % 256 == 0 {
+                c = phase.cos();
+                s = phase.sin();
+            }
             let r = re[i] as f64;
             let q = im[i] as f64;
             re[i] = (r * c - q * s) as f32;
@@ -349,6 +360,9 @@ impl NcoCorrector {
             } else if phase < -PI {
                 phase += 2.0 * PI;
             }
+            let next_c = c * step_c - s * step_s;
+            s = s * step_c + c * step_s;
+            c = next_c;
         }
         self.phase = phase;
     }
