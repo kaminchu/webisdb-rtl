@@ -390,3 +390,105 @@ pub extern "C" fn demap_demodulate_soft(
         }
     }
 }
+
+/// Fused per-symbol demap.
+///
+/// Extracts the center-segment carriers from a one-seg FFT output, forms the LS
+/// channel estimate (with optional one-pole temporal smoothing), zero-forcing
+/// equalizes only the requested data carriers and writes them compactly to
+/// `out_*`. Equivalent to `demap_estimator_estimate` followed by
+/// `demap_equalize` restricted to `data_idx`.
+#[allow(clippy::too_many_arguments)]
+#[no_mangle]
+pub extern "C" fn demap_process_symbol(
+    fft_re: *const f32,
+    fft_im: *const f32,
+    fft_size: usize,
+    carrier_base: i32,
+    bins_re: *mut f32,
+    bins_im: *mut f32,
+    seg_pilot_ref: *const f32,
+    h_re: *mut f32,
+    h_im: *mut f32,
+    prev_re: *mut f32,
+    prev_im: *mut f32,
+    has_prev: u32,
+    symbol_index_in_frame: usize,
+    carriers_per_segment: usize,
+    alpha: f64,
+    data_idx: *const u32,
+    data_count: usize,
+    out_re: *mut f32,
+    out_im: *mut f32,
+) {
+    if fft_re.is_null()
+        || fft_im.is_null()
+        || bins_re.is_null()
+        || bins_im.is_null()
+        || seg_pilot_ref.is_null()
+        || h_re.is_null()
+        || h_im.is_null()
+        || prev_re.is_null()
+        || prev_im.is_null()
+        || out_re.is_null()
+        || out_im.is_null()
+        || fft_size == 0
+        || carriers_per_segment == 0
+        || data_count == 0
+        || data_idx.is_null()
+    {
+        return;
+    }
+    unsafe {
+        let fr = core::slice::from_raw_parts(fft_re, fft_size);
+        let fi = core::slice::from_raw_parts(fft_im, fft_size);
+        let br = core::slice::from_raw_parts_mut(bins_re, carriers_per_segment);
+        let bi = core::slice::from_raw_parts_mut(bins_im, carriers_per_segment);
+        let n = fft_size as i64;
+        let base = carrier_base as i64;
+        for c in 0..carriers_per_segment {
+            let bin = ((base + c as i64) % n + n) % n;
+            br[c] = fr[bin as usize];
+            bi[c] = fi[bin as usize];
+        }
+
+        let sp = core::slice::from_raw_parts(seg_pilot_ref, carriers_per_segment);
+        let hr = core::slice::from_raw_parts_mut(h_re, carriers_per_segment);
+        let hi = core::slice::from_raw_parts_mut(h_im, carriers_per_segment);
+        estimate_into(
+            br,
+            bi,
+            sp,
+            hr,
+            hi,
+            symbol_index_in_frame,
+            carriers_per_segment,
+        );
+
+        let pr = core::slice::from_raw_parts_mut(prev_re, carriers_per_segment);
+        let pi = core::slice::from_raw_parts_mut(prev_im, carriers_per_segment);
+        if has_prev != 0 {
+            let a = alpha;
+            let b = 1.0 - a;
+            for i in 0..carriers_per_segment {
+                hr[i] = (a * hr[i] as f64 + b * pr[i] as f64) as f32;
+                hi[i] = (a * hi[i] as f64 + b * pi[i] as f64) as f32;
+            }
+        }
+        core::ptr::copy_nonoverlapping(hr.as_ptr(), pr.as_mut_ptr(), carriers_per_segment);
+        core::ptr::copy_nonoverlapping(hi.as_ptr(), pi.as_mut_ptr(), carriers_per_segment);
+
+        let idx = core::slice::from_raw_parts(data_idx, data_count);
+        let ore = core::slice::from_raw_parts_mut(out_re, data_count);
+        let oim = core::slice::from_raw_parts_mut(out_im, data_count);
+        for k in 0..data_count {
+            let d = idx[k] as usize;
+            let hre = hr[d] as f64;
+            let him = hi[d] as f64;
+            let den = hre * hre + him * him;
+            let inv = if den > 1e-12 { 1.0 / den } else { 0.0 };
+            ore[k] = ((br[d] as f64 * hre + bi[d] as f64 * him) * inv) as f32;
+            oim[k] = ((bi[d] as f64 * hre - br[d] as f64 * him) * inv) as f32;
+        }
+    }
+}

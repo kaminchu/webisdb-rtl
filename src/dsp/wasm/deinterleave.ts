@@ -65,21 +65,56 @@ function frequencyRun(
 ): ComplexPlane {
   const { ptr: perm, size } = ensurePermutation(mode)
   const n = plane.re.length
-  const bytes = n * 4
-  const inRe = wasmAlloc(wasm, bytes)
-  const inIm = wasmAlloc(wasm, bytes)
-  const outRe = wasmAlloc(wasm, bytes)
-  const outIm = wasmAlloc(wasm, bytes)
-  heap.f32(inRe, n).set(plane.re)
-  heap.f32(inIm, n).set(plane.im)
-  exportFn<FrequencyFn>(fn)(perm, size, inRe, inIm, outRe, outIm, n, rotation)
-  const re = heap.f32(outRe, n).slice()
-  const im = heap.f32(outIm, n).slice()
-  wasmFree(wasm, inRe, bytes)
-  wasmFree(wasm, inIm, bytes)
-  wasmFree(wasm, outRe, bytes)
-  wasmFree(wasm, outIm, bytes)
-  return { re, im }
+  const scratch = ensureFrequencyScratch(n)
+  heap.f32(scratch.inRe, n).set(plane.re)
+  heap.f32(scratch.inIm, n).set(plane.im)
+  exportFn<FrequencyFn>(fn)(
+    perm,
+    size,
+    scratch.inRe,
+    scratch.inIm,
+    scratch.outRe,
+    scratch.outIm,
+    n,
+    rotation,
+  )
+  return {
+    re: heap.f32(scratch.outRe, n).slice(),
+    im: heap.f32(scratch.outIm, n).slice(),
+  }
+}
+
+interface FrequencyScratch {
+  cap: number
+  inRe: number
+  inIm: number
+  outRe: number
+  outIm: number
+}
+
+let frequencyScratch: FrequencyScratch | null = null
+
+function ensureFrequencyScratch(n: number): FrequencyScratch {
+  if (frequencyScratch !== null && frequencyScratch.cap >= n) return frequencyScratch
+  if (frequencyScratch !== null) {
+    const bytes = frequencyScratch.cap * 4
+    for (const p of [
+      frequencyScratch.inRe,
+      frequencyScratch.inIm,
+      frequencyScratch.outRe,
+      frequencyScratch.outIm,
+    ]) {
+      wasmFree(wasm, p, bytes)
+    }
+  }
+  frequencyScratch = {
+    cap: n,
+    inRe: wasmAlloc(wasm, n * 4),
+    inIm: wasmAlloc(wasm, n * 4),
+    outRe: wasmAlloc(wasm, n * 4),
+    outIm: wasmAlloc(wasm, n * 4),
+  }
+  return frequencyScratch
 }
 
 /** WASM `frequencyDeinterleave`: undo intra-segment frequency interleaving. */
@@ -103,6 +138,9 @@ export function frequencyInterleaveWasm(
 /** WASM soft per-carrier bit deinterleaver. */
 export class WasmSoftBitDeinterleaver {
   private state = 0
+  private cap = 0
+  private pIn = 0
+  private pOut = 0
 
   constructor(modulation: CarrierModulation) {
     const delays = bitDeinterleaveDelays(modulation)
@@ -118,20 +156,32 @@ export class WasmSoftBitDeinterleaver {
   }
 
   destroy(): void {
+    this.freeScratch()
     exportFn<(state: number) => void>('soft_bit_deinterleaver_destroy')(this.state)
     this.state = 0
   }
 
   process(input: Int8Array): Int8Array {
     const n = input.length
-    const pIn = wasmAlloc(wasm, n)
-    const pOut = wasmAlloc(wasm, n)
-    heap.i8(pIn, n).set(input)
-    exportFn<SoftProcessFn>('soft_bit_deinterleaver_process')(this.state, pIn, n, pOut)
-    const out = heap.i8(pOut, n).slice()
-    wasmFree(wasm, pIn, n)
-    wasmFree(wasm, pOut, n)
-    return out
+    this.ensure(n)
+    heap.i8(this.pIn, n).set(input)
+    exportFn<SoftProcessFn>('soft_bit_deinterleaver_process')(this.state, this.pIn, n, this.pOut)
+    return heap.i8(this.pOut, n).slice()
+  }
+
+  private ensure(n: number): void {
+    if (n <= this.cap) return
+    this.freeScratch()
+    this.pIn = wasmAlloc(wasm, n)
+    this.pOut = wasmAlloc(wasm, n)
+    this.cap = n
+  }
+
+  private freeScratch(): void {
+    if (this.cap === 0) return
+    wasmFree(wasm, this.pIn, this.cap)
+    wasmFree(wasm, this.pOut, this.cap)
+    this.cap = 0
   }
 }
 
@@ -139,10 +189,19 @@ export class WasmSoftBitDeinterleaver {
 export class WasmTimeDeinterleaver {
   private state = 0
   private readonly carriers: number
+  private readonly pInRe: number
+  private readonly pInIm: number
+  private readonly pOutRe: number
+  private readonly pOutIm: number
 
   constructor(mode: TransmissionMode, I: number) {
     this.carriers = MODE_PARAMS[mode].dataCarriersPerSegment
+    const bytes = this.carriers * 4
     this.state = exportFn<TimeCreateFn>('time_deinterleaver_create')(this.carriers, I)
+    this.pInRe = wasmAlloc(wasm, bytes)
+    this.pInIm = wasmAlloc(wasm, bytes)
+    this.pOutRe = wasmAlloc(wasm, bytes)
+    this.pOutIm = wasmAlloc(wasm, bytes)
   }
 
   reset(): void {
@@ -150,34 +209,30 @@ export class WasmTimeDeinterleaver {
   }
 
   destroy(): void {
+    const bytes = this.carriers * 4
+    for (const p of [this.pInRe, this.pInIm, this.pOutRe, this.pOutIm]) {
+      wasmFree(wasm, p, bytes)
+    }
     exportFn<(state: number) => void>('time_deinterleaver_destroy')(this.state)
     this.state = 0
   }
 
   process(re: Float32Array, im: Float32Array): ComplexPlane {
     const n = this.carriers
-    const bytes = n * 4
-    const pInRe = wasmAlloc(wasm, bytes)
-    const pInIm = wasmAlloc(wasm, bytes)
-    const pOutRe = wasmAlloc(wasm, bytes)
-    const pOutIm = wasmAlloc(wasm, bytes)
-    heap.f32(pInRe, n).set(re.subarray(0, n))
-    heap.f32(pInIm, n).set(im.subarray(0, n))
+    heap.f32(this.pInRe, n).set(re.subarray(0, n))
+    heap.f32(this.pInIm, n).set(im.subarray(0, n))
     exportFn<TimeProcessFn>('time_deinterleaver_process')(
       this.state,
-      pInRe,
-      pInIm,
-      pOutRe,
-      pOutIm,
+      this.pInRe,
+      this.pInIm,
+      this.pOutRe,
+      this.pOutIm,
       n,
     )
-    const outRe = heap.f32(pOutRe, n).slice()
-    const outIm = heap.f32(pOutIm, n).slice()
-    wasmFree(wasm, pInRe, bytes)
-    wasmFree(wasm, pInIm, bytes)
-    wasmFree(wasm, pOutRe, bytes)
-    wasmFree(wasm, pOutIm, bytes)
-    return { re: outRe, im: outIm }
+    return {
+      re: heap.f32(this.pOutRe, n).slice(),
+      im: heap.f32(this.pOutIm, n).slice(),
+    }
   }
 }
 

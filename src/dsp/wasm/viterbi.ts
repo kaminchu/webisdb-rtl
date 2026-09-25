@@ -87,16 +87,16 @@ export class WasmViterbiBackend implements ViterbiBackend {
 export class WasmStreamingViterbi {
   private readonly wasm: WasmModule
   private readonly heap: WasmHeap
-  private readonly onByte: (byte: number) => void
+  private readonly onByte: ((byte: number) => void) | null
   private readonly ptr: number
   private cap = 0
   private pIn = 0
   private pOut = 0
 
-  constructor(rate: ViterbiRate, onByte: (byte: number) => void) {
+  constructor(rate: ViterbiRate, onByte?: (byte: number) => void) {
     this.wasm = instantiateWasm(wasmBase64)
     this.heap = new WasmHeap(this.wasm.memory)
-    this.onByte = onByte
+    this.onByte = onByte ?? null
     this.ptr = (this.wasm.exports.viterbi_stream_create as StreamCreateFn)(RATE_INDEX[rate])
   }
 
@@ -106,7 +106,7 @@ export class WasmStreamingViterbi {
 
   feedSoft(soft: number): void {
     const byte = (this.wasm.exports.viterbi_stream_feed_soft as StreamFeedFn)(this.ptr, soft)
-    if (byte >= 0) this.onByte(byte)
+    if (byte >= 0 && this.onByte !== null) this.onByte(byte)
   }
 
   feedSoftBlock(soft: Int8Array): Uint8Array {
@@ -122,7 +122,7 @@ export class WasmStreamingViterbi {
     )
     const out = new Uint8Array(n)
     if (n > 0) out.set(this.heap.u8(this.pOut, n))
-    for (let i = 0; i < n; i++) this.onByte(out[i])
+    if (this.onByte !== null) for (let i = 0; i < n; i++) this.onByte(out[i])
     return out
   }
 

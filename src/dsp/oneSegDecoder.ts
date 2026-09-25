@@ -53,12 +53,12 @@ export class OneSegDecoder {
   private readonly timeDeinterleaver: WasmTimeDeinterleaver
   private readonly bitDeinterleaver: WasmSoftBitDeinterleaver
   private readonly byteDeinterleaver = new WasmByteDeinterleaver()
-  private readonly descrambler = new EnergyDescrambler()
   private readonly ts = new TsGenerator()
   private readonly viterbi: WasmStreamingViterbi
   private readonly rs: RsBackend
   private readonly carriersPerSymbol: number
   private readonly frameBytes: number
+  private readonly mask: Uint8Array
   private readonly packet = new Uint8Array(RS_CODEWORD_SIZE)
   private byteIndex = 0
   private previous: ComplexPlane | null = null
@@ -81,7 +81,8 @@ export class OneSegDecoder {
     this.rs = options.rs ?? new WasmRsBackend()
     const [k, n] = CODE_RATE_FRACTIONS[codeRate]
     this.frameBytes = (204 * this.carriersPerSymbol * bitsPerCarrier(this.modulation) * k) / n / 8
-    this.viterbi = new WasmStreamingViterbi(codeRate, (byte) => this.pushDecodedByte(byte))
+    this.mask = buildMask(this.frameBytes)
+    this.viterbi = new WasmStreamingViterbi(codeRate)
   }
 
   get tsStats() {
@@ -92,7 +93,6 @@ export class OneSegDecoder {
     this.timeDeinterleaver.reset()
     this.bitDeinterleaver.reset()
     this.byteDeinterleaver.reset()
-    this.descrambler.reset()
     this.viterbi.reset()
     this.ts.reset()
     this.byteIndex = 0
@@ -123,22 +123,34 @@ export class OneSegDecoder {
       const soft = demodulatePlaneSoftWasm(this.modulation, td, this.previous)
       this.previous = td
       const deinterleavedBits = this.bitDeinterleaver.process(soft)
-      this.viterbi.feedSoftBlock(deinterleavedBits)
+      this.pushDecodedBytes(this.viterbi.feedSoftBlock(deinterleavedBits))
     }
     return this.ts.takeBytes()
   }
 
-  private pushDecodedByte(value: number): void {
-    const v = this.byteDeinterleaver.processByte(value)
-    if (this.byteIndex % this.frameBytes === 0) this.descrambler.reset()
-    const mask = this.descrambler.nextMaskByte()
-    const offset = this.byteIndex % RS_CODEWORD_SIZE
-    if (offset === RS_CODEWORD_SIZE - 1) this.packet[0] = v
-    else this.packet[offset + 1] = v ^ mask
-    this.byteIndex++
-    if (offset === RS_CODEWORD_SIZE - 1) {
-      const data = this.rs.decode(this.packet)
-      if (data !== null && data[0] === SYNC_BYTE) this.ts.pushBlock(data)
+  private pushDecodedBytes(decoded: Uint8Array): void {
+    if (decoded.length === 0) return
+    const bytes = this.byteDeinterleaver.process(decoded)
+    for (let i = 0; i < bytes.length; i++) {
+      const v = bytes[i]
+      const maskByte = this.mask[this.byteIndex % this.mask.length]
+      const offset = this.byteIndex % RS_CODEWORD_SIZE
+      if (offset === RS_CODEWORD_SIZE - 1) this.packet[0] = v
+      else this.packet[offset + 1] = v ^ maskByte
+      this.byteIndex++
+      if (offset === RS_CODEWORD_SIZE - 1) {
+        const data = this.rs.decode(this.packet)
+        if (data !== null && data[0] === SYNC_BYTE) this.ts.pushBlock(data)
+      }
     }
   }
+}
+
+/** Precompute the per-frame energy dispersal mask bytes (PRBS reset each frame). */
+function buildMask(frameBytes: number): Uint8Array {
+  const length = Math.round(frameBytes)
+  const mask = new Uint8Array(length)
+  const prbs = new EnergyDescrambler()
+  for (let i = 0; i < length; i++) mask[i] = prbs.nextMaskByte()
+  return mask
 }

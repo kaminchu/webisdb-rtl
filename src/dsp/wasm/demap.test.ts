@@ -4,6 +4,7 @@ import { demodulatePlane, demodulatePlaneSoft } from '../stages/carrierDemod'
 import { CarrierModulation, MODE_PARAMS, TransmissionMode } from '../isdbtParams'
 import {
   WasmChannelEstimator,
+  WasmSymbolDemapper,
   demodulatePlaneSoftWasm,
   demodulatePlaneWasm,
   equalizeWasm,
@@ -129,5 +130,65 @@ describe('wasm demap', () => {
     const curr = plane(cps, 77)
     expect(() => demodulatePlaneWasm(CarrierModulation.DQPSK, curr, null)).toThrow()
     expect(() => demodulatePlaneSoftWasm(CarrierModulation.DQPSK, curr, null)).toThrow()
+  })
+})
+
+describe('WasmSymbolDemapper', () => {
+  const mode3: TransmissionMode = TransmissionMode.Mode3
+  const n = MODE_PARAMS[mode3].oneSegFftSize
+  const cps3 = MODE_PARAMS[mode3].carriersPerSegment
+  const dataCount = MODE_PARAMS[mode3].dataCarriersPerSegment
+  const carrierBase = n / 2 - cps3 / 2
+  const dataIdx = Array.from({ length: dataCount }, (_, i) => (i * 7) % cps3)
+
+  function fftFromCarriers(carriers: { re: Float32Array; im: Float32Array }): {
+    re: Float32Array
+    im: Float32Array
+  } {
+    const re = new Float32Array(n)
+    const im = new Float32Array(n)
+    for (let c = 0; c < cps3; c++) {
+      const bin = (carrierBase + c + n) % n
+      re[bin] = carriers.re[c]
+      im[bin] = carriers.im[c]
+    }
+    return { re, im }
+  }
+
+  it('matches estimateChannel + equalize at the selected data carriers', () => {
+    const demapper = new WasmSymbolDemapper(mode3, [dataIdx, dataIdx, dataIdx, dataIdx], 1)
+    const outRe = new Float32Array(dataCount)
+    const outIm = new Float32Array(dataCount)
+    for (const symbolIndex of symbolIndices) {
+      const carriers = plane(cps3, 7000 + symbolIndex, 1.5)
+      const fft = fftFromCarriers(carriers)
+      const h = estimateChannel(carriers, symbolIndex, mode3)
+      const z = equalize(carriers, h)
+      demapper.process(fft.re, fft.im, n, carrierBase, 0, symbolIndex, outRe, outIm, 0)
+      for (let k = 0; k < dataCount; k++) {
+        expect(outRe[k]).toBeCloseTo(z.re[dataIdx[k]], 4)
+        expect(outIm[k]).toBeCloseTo(z.im[dataIdx[k]], 4)
+      }
+    }
+    demapper.dispose()
+  })
+
+  it('matches ChannelEstimator temporal smoothing across symbols', () => {
+    const expected = new ChannelEstimator(mode3, 0.5)
+    const demapper = new WasmSymbolDemapper(mode3, [dataIdx, dataIdx, dataIdx, dataIdx], 0.5)
+    const outRe = new Float32Array(dataCount)
+    const outIm = new Float32Array(dataCount)
+    for (let s = 0; s < 8; s++) {
+      const carriers = plane(cps3, 8000 + s * 13, 1.5)
+      const fft = fftFromCarriers(carriers)
+      const h = expected.estimate(carriers, s)
+      const z = equalize(carriers, h)
+      demapper.process(fft.re, fft.im, n, carrierBase, 0, s, outRe, outIm, 0)
+      for (let k = 0; k < dataCount; k++) {
+        expect(outRe[k]).toBeCloseTo(z.re[dataIdx[k]], 4)
+        expect(outIm[k]).toBeCloseTo(z.im[dataIdx[k]], 4)
+      }
+    }
+    demapper.dispose()
   })
 })

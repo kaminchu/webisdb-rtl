@@ -28,7 +28,7 @@ import { pilotReferenceAt, type ComplexBins } from './stages/channelEstimation'
 import { TmccDecoder } from './stages/tmcc'
 import { OneSegDecoder } from './oneSegDecoder'
 import { WasmFftBackend } from './wasm/fft'
-import { WasmChannelEstimator, equalizeWasm } from './wasm/demap'
+import { WasmSymbolDemapper } from './wasm/demap'
 import { WasmOfdmSynchronizer } from './wasm/ofdm'
 import { WasmDcRemoval, WasmFractionalResampler, WasmNcoCorrector } from './wasm/resample'
 
@@ -64,6 +64,7 @@ const ACQUIRE_MIN_SAMPLES = 750_000
 const ACQUIRE_MAX_SYMBOLS = 900
 const TMCC_CFO_RANGE = 320
 const TS_BATCH_SYMBOLS = 32
+const MER_INTERVAL = 4
 
 const CANDIDATES: readonly (readonly [TransmissionMode, number])[] = [
   [3, 8],
@@ -90,7 +91,7 @@ const ONESEG_AC: Record<TransmissionMode, readonly number[]> = {
 function dataCarrierIndices(mode: TransmissionMode, symbolIndexInFrame: number): number[] {
   const cps = MODE_PARAMS[mode].carriersPerSegment
   const exclude = new Set<number>(scatteredPilotIndices(symbolIndexInFrame, cps))
-  for (const c of oneSegTmccCarriers(mode)) exclude.add(c)
+  for (const c of tmccCarriersFor(mode)) exclude.add(c)
   for (const c of ONESEG_AC[mode]) exclude.add(c)
   const out: number[] = []
   for (let c = 0; c < cps; c++) if (!exclude.has(c)) out.push(c)
@@ -105,6 +106,16 @@ function dataCarriersFor(mode: TransmissionMode, symbolIndexInFrame: number): nu
   if (!v) {
     v = dataCarrierIndices(mode, phase)
     dataCarrierCache.set(key, v)
+  }
+  return v
+}
+
+const tmccCarrierCache = new Map<TransmissionMode, readonly number[]>()
+function tmccCarriersFor(mode: TransmissionMode): readonly number[] {
+  let v = tmccCarrierCache.get(mode)
+  if (!v) {
+    v = oneSegTmccCarriers(mode)
+    tmccCarrierCache.set(mode, v)
   }
   return v
 }
@@ -126,7 +137,7 @@ function bpskMetric(
       if (c < 0 || c >= n) continue
       const dr = planes[s].re[c] * planes[s - 1].re[c] + planes[s].im[c] * planes[s - 1].im[c]
       const di = planes[s].im[c] * planes[s - 1].re[c] - planes[s].re[c] * planes[s - 1].im[c]
-      const mag = Math.hypot(dr, di)
+      const mag = Math.sqrt(dr * dr + di * di)
       if (mag < 1e-9) continue
       const cosd = dr / mag
       const sind = di / mag
@@ -143,7 +154,7 @@ function estimateIntegerCfo(
   mode: TransmissionMode,
 ): { m: number; score: number }[] {
   const half = MODE_PARAMS[mode].oneSegFftSize >> 1
-  const tmcc = oneSegTmccCarriers(mode)
+  const tmcc = tmccCarriersFor(mode)
   const scored: { m: number; score: number }[] = []
   for (let m = -TMCC_CFO_RANGE; m <= TMCC_CFO_RANGE; m++) {
     scored.push({ m, score: bpskMetric(planes, half, tmcc, m) })
@@ -201,16 +212,6 @@ function estimateSpPhase(
   return best
 }
 
-function selectCarriers(src: ComplexBins, indices: readonly number[]): ComplexPlane {
-  const re = new Float32Array(indices.length)
-  const im = new Float32Array(indices.length)
-  for (let i = 0; i < indices.length; i++) {
-    re[i] = src.re[indices[i]]
-    im[i] = src.im[indices[i]]
-  }
-  return { re, im }
-}
-
 export class OneSegPipeline {
   private readonly callbacks: OneSegPipelineCallbacks
   private readonly options: Required<OneSegPipelineOptions>
@@ -226,6 +227,11 @@ export class OneSegPipeline {
   private derotatedUpTo = 0
   private syncFed = 0
   private lastAcquireLen = 0
+  private acqRe = new Float32Array(0)
+  private acqIm = new Float32Array(0)
+  private acqFftRe = new Float32Array(0)
+  private acqFftIm = new Float32Array(0)
+  private readonly planePool: ComplexBins[] = []
 
   private mode: TransmissionMode | null = null
   private gi: number | null = null
@@ -238,11 +244,18 @@ export class OneSegPipeline {
 
   private nco: WasmNcoCorrector | null = null
   private sync: WasmOfdmSynchronizer | null = null
-  private channel: WasmChannelEstimator | null = null
+  private demapper: WasmSymbolDemapper | null = null
   private tmcc: TmccDecoder | null = null
   private oneSeg: OneSegDecoder | null = null
   private tmccInfo: TmccInfo | null = null
-  private pendingPlanes: ComplexPlane[] = []
+  private fftRe = new Float32Array(0)
+  private fftIm = new Float32Array(0)
+  private tmccRe = new Float32Array(0)
+  private tmccIm = new Float32Array(0)
+  private pendingRe = new Float32Array(0)
+  private pendingIm = new Float32Array(0)
+  private pendingCount = 0
+  private dataCount = 0
   private symbolIndex = 0
   private symbolsProcessed = 0
   private tsBytes = 0
@@ -333,15 +346,15 @@ export class OneSegPipeline {
     this.resampler.reset()
     this.nco?.dispose()
     this.sync?.dispose()
-    this.channel?.dispose()
+    this.demapper?.dispose()
     this.oneSeg?.dispose()
     this.nco = null
     this.sync = null
-    this.channel = null
+    this.demapper = null
     this.tmcc = null
     this.oneSeg = null
     this.tmccInfo = null
-    this.pendingPlanes = []
+    this.pendingCount = 0
     this.mode = null
     this.gi = null
     this.integerCarrierOffset = 0
@@ -383,8 +396,14 @@ export class OneSegPipeline {
         this.lastGammaMag = res.gammaMagnitude
         this.lastPhi = res.phi
 
-        const cRe = this.bufRe.slice(0, this.bufLen)
-        const cIm = this.bufIm.slice(0, this.bufLen)
+        if (this.acqRe.length < this.bufLen) {
+          this.acqRe = new Float32Array(this.bufLen)
+          this.acqIm = new Float32Array(this.bufLen)
+        }
+        this.acqRe.set(this.bufRe.subarray(0, this.bufLen))
+        this.acqIm.set(this.bufIm.subarray(0, this.bufLen))
+        const cRe = this.acqRe
+        const cIm = this.acqIm
         const fFrac = res.fractionalOffsetHz ?? 0
         const nco = new WasmNcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
         nco.process(cRe, cIm)
@@ -427,16 +446,25 @@ export class OneSegPipeline {
     const planes: ComplexBins[] = []
     const half = n >> 1
     const cap = Math.min(starts.length, ACQUIRE_MAX_SYMBOLS)
-    const fRe = new Float32Array(n)
-    const fIm = new Float32Array(n)
+    if (this.acqFftRe.length !== n) {
+      this.acqFftRe = new Float32Array(n)
+      this.acqFftIm = new Float32Array(n)
+    }
+    const fRe = this.acqFftRe
+    const fIm = this.acqFftIm
     for (let s = 0; s < cap; s++) {
       const start = starts[s]
       if (start + n > cRe.length) break
       fRe.set(cRe.subarray(start, start + n))
       fIm.set(cIm.subarray(start, start + n))
       this.fft.forward(fRe, fIm)
-      const re = new Float32Array(n)
-      const im = new Float32Array(n)
+      let plane = this.planePool[s]
+      if (plane === undefined || plane.re.length !== n) {
+        plane = { re: new Float32Array(n), im: new Float32Array(n) }
+        this.planePool[s] = plane
+      }
+      const re = plane.re
+      const im = plane.im
       for (let i = 0; i < n; i++) {
         const j = (i + half) % n
         re[j] = fRe[i]
@@ -454,18 +482,22 @@ export class OneSegPipeline {
     m: number,
   ): { info: TmccInfo; frameStart: number } | null {
     const half = MODE_PARAMS[mode].oneSegFftSize >> 1
-    const tmcc = oneSegTmccCarriers(mode)
+    const tmcc = tmccCarriersFor(mode)
     const dec = new TmccDecoder(mode, gi)
-    let info = dec.push(new Float32Array(tmcc.length), new Float32Array(tmcc.length))
+    const tr = new Float32Array(tmcc.length)
+    const ti = new Float32Array(tmcc.length)
+    let info = dec.push(tr, ti)
     for (let s = 1; s < planes.length; s++) {
-      const tr = new Float32Array(tmcc.length)
-      const ti = new Float32Array(tmcc.length)
       const angle = (-2 * Math.PI * (m + MODE_PARAMS[mode].carriersPerSegment / 2) * s) / gi
       const cos = Math.cos(angle)
       const sin = Math.sin(angle)
       for (let c = 0; c < tmcc.length; c++) {
         const bin = half + m + tmcc[c]
-        if (bin < 0 || bin >= planes[s].re.length) continue
+        if (bin < 0 || bin >= planes[s].re.length) {
+          tr[c] = 0
+          ti[c] = 0
+          continue
+        }
         tr[c] = planes[s].re[bin] * cos - planes[s].im[bin] * sin
         ti[c] = planes[s].re[bin] * sin + planes[s].im[bin] * cos
       }
@@ -505,11 +537,23 @@ export class OneSegPipeline {
     this.fractionalOffsetHz = fFrac
     this.nco = new WasmNcoCorrector(fFrac, ONESEG_SAMPLING_HZ)
     this.sync = new WasmOfdmSynchronizer(n, gi, ONESEG_SAMPLING_HZ, true)
-    this.channel = new WasmChannelEstimator(mode, 1)
+    this.demapper = new WasmSymbolDemapper(
+      mode,
+      [0, 1, 2, 3].map((phase) => dataCarriersFor(mode, phase)),
+      1,
+    )
     this.tmcc = new TmccDecoder(mode, gi)
     this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
     this.tmccInfo = info
-    this.pendingPlanes = []
+    this.dataCount = MODE_PARAMS[mode].dataCarriersPerSegment
+    this.pendingRe = new Float32Array(TS_BATCH_SYMBOLS * this.dataCount)
+    this.pendingIm = new Float32Array(TS_BATCH_SYMBOLS * this.dataCount)
+    this.fftRe = new Float32Array(n)
+    this.fftIm = new Float32Array(n)
+    const tmccLength = tmccCarriersFor(mode).length
+    this.tmccRe = new Float32Array(tmccLength)
+    this.tmccIm = new Float32Array(tmccLength)
+    this.pendingCount = 0
     this.symbolIndex = 0
     this.derotatedUpTo = 0
     this.syncFed = 0
@@ -552,17 +596,16 @@ export class OneSegPipeline {
     const mode = this.mode
     const n = this.fftSize
     if (mode === null || start + n > this.bufLen) return
-    const fRe = new Float32Array(n)
-    const fIm = new Float32Array(n)
+    const fRe = this.fftRe
+    const fIm = this.fftIm
     fRe.set(this.bufRe.subarray(start, start + n))
     fIm.set(this.bufIm.subarray(start, start + n))
     this.fft.forward(fRe, fIm)
-    const carriers = this.extractAtBase(fRe, fIm, n, mode)
     this.symbolsProcessed++
 
-    const tmccC = oneSegTmccCarriers(mode)
-    const tr = new Float32Array(tmccC.length)
-    const ti = new Float32Array(tmccC.length)
+    const tmccC = tmccCarriersFor(mode)
+    const tr = this.tmccRe
+    const ti = this.tmccIm
     // Integer CFO rotates successive symbols by 2π * offset * GI / FFT size.
     const angle =
       (-2 *
@@ -573,8 +616,11 @@ export class OneSegPipeline {
     const cos = Math.cos(angle)
     const sin = Math.sin(angle)
     for (let c = 0; c < tmccC.length; c++) {
-      tr[c] = carriers.re[tmccC[c]] * cos - carriers.im[tmccC[c]] * sin
-      ti[c] = carriers.re[tmccC[c]] * sin + carriers.im[tmccC[c]] * cos
+      const bin = (((this.carrierBase + tmccC[c]) % n) + n) % n
+      const re = fRe[bin]
+      const im = fIm[bin]
+      tr[c] = re * cos - im * sin
+      ti[c] = re * sin + im * cos
     }
     const info = this.tmcc?.push(tr, ti) ?? null
     if (info !== null && info !== this.tmccInfo) {
@@ -584,56 +630,64 @@ export class OneSegPipeline {
 
     if (this.oneSeg !== null && this.symbolIndex >= this.frameStartSymbol) {
       const spPhase = (this.symbolIndex + this.spOffset) % 4
-      const h = this.channel!.estimate(carriers, spPhase)
-      const z = equalizeWasm(carriers, h)
-      this.updateMer(z, mode, spPhase)
-      const plane = selectCarriers(z, dataCarriersFor(mode, spPhase))
-      this.pendingPlanes.push(plane)
-      if (this.pendingPlanes.length >= TS_BATCH_SYMBOLS) this.flushTs()
+      const offset = this.pendingCount * this.dataCount
+      this.demapper!.process(
+        fRe,
+        fIm,
+        n,
+        this.carrierBase,
+        spPhase,
+        spPhase,
+        this.pendingRe,
+        this.pendingIm,
+        offset,
+      )
+      if (this.symbolIndex % MER_INTERVAL === 0) {
+        this.updateMer(this.pendingRe, this.pendingIm, offset, this.dataCount)
+      }
+      this.pendingCount++
+      if (this.pendingCount >= TS_BATCH_SYMBOLS) this.flushTs()
     }
     this.symbolIndex++
   }
 
-  private extractAtBase(
-    fRe: Float32Array,
-    fIm: Float32Array,
-    n: number,
-    mode: TransmissionMode,
-  ): ComplexBins {
-    const cps = MODE_PARAMS[mode].carriersPerSegment
-    const re = new Float32Array(cps)
-    const im = new Float32Array(cps)
-    for (let c = 0; c < cps; c++) {
-      const bin = (this.carrierBase + c + n) % n
-      re[c] = fRe[bin]
-      im[c] = fIm[bin]
-    }
-    return { re, im }
-  }
-
-  private updateMer(z: ComplexBins, mode: TransmissionMode, sif: number): void {
-    const indices = dataCarriersFor(mode, sif)
+  private updateMer(re: Float32Array, im: Float32Array, offset: number, count: number): void {
     let power = 0
-    for (const c of indices) power += z.re[c] * z.re[c] + z.im[c] * z.im[c]
-    power /= indices.length
+    for (let i = 0; i < count; i++) {
+      const r = re[offset + i]
+      const q = im[offset + i]
+      power += r * r + q * q
+    }
+    power /= count
     this.lastSignalPower = power
     const scale = Math.sqrt(power / 2)
     let err = 0
-    for (const c of indices) {
-      const idealRe = z.re[c] >= 0 ? scale : -scale
-      const idealIm = z.im[c] >= 0 ? scale : -scale
-      const dr = z.re[c] - idealRe
-      const di = z.im[c] - idealIm
+    for (let i = 0; i < count; i++) {
+      const r = re[offset + i]
+      const q = im[offset + i]
+      const idealRe = r >= 0 ? scale : -scale
+      const idealIm = q >= 0 ? scale : -scale
+      const dr = r - idealRe
+      const di = q - idealIm
       err += dr * dr + di * di
     }
-    err /= indices.length
+    err /= count
     this.lastMerDb = power > 0 && err > 0 ? 10 * Math.log10(power / err) : null
   }
 
   private flushTs(): void {
-    if (this.oneSeg === null || this.pendingPlanes.length === 0) return
-    const out = this.oneSeg.decode(this.pendingPlanes)
-    this.pendingPlanes = []
+    if (this.oneSeg === null || this.pendingCount === 0) return
+    const dc = this.dataCount
+    const planes: ComplexPlane[] = []
+    for (let i = 0; i < this.pendingCount; i++) {
+      const offset = i * dc
+      planes.push({
+        re: this.pendingRe.subarray(offset, offset + dc),
+        im: this.pendingIm.subarray(offset, offset + dc),
+      })
+    }
+    this.pendingCount = 0
+    const out = this.oneSeg.decode(planes)
     if (out.length > 0) {
       this.tsBytes += out.length
       this.callbacks.onTs?.(out)
