@@ -11,7 +11,7 @@
 use std::vec::Vec;
 
 use crate::demap::demap_process_symbol;
-use crate::fft::batch_windows;
+use crate::fft::fft_forward;
 use crate::ofdm::{
     ofdm_sync_create, ofdm_sync_destroy, ofdm_sync_process, ofdm_sync_reset, ofdm_sync_starts_ptr,
     SyncState,
@@ -37,8 +37,6 @@ pub struct Frontend {
     tmcc_carriers: Vec<u32>,
     fft_re: Vec<f32>,
     fft_im: Vec<f32>,
-    fft_scratch_re: Vec<f32>,
-    fft_scratch_im: Vec<f32>,
     tmcc_re: Vec<f32>,
     tmcc_im: Vec<f32>,
     seg_ref: Vec<f32>,
@@ -109,20 +107,15 @@ impl Frontend {
         self.pending_im.resize(cap, 0.0);
     }
 
-    fn ensure_fft_scratch(&mut self, need: usize) {
-        if need <= self.fft_scratch_re.len() {
+    fn process_symbol(&mut self, start: f64) {
+        let rel = start as i64 - self.buf_start;
+        if rel < 0 || rel as usize + self.n > self.buf_len {
             return;
         }
-        self.fft_scratch_re.resize(need, 0.0);
-        self.fft_scratch_im.resize(need, 0.0);
-    }
-
-    /// Run the stateful half of `process_symbol` on the FFT result already
-    /// stored at `off` in the scratch planes. The FFTs themselves are computed
-    /// for the whole chunk up front by [`batch_windows`].
-    fn process_symbol_bins(&mut self, off: usize) {
-        self.fft_re[..self.n].copy_from_slice(&self.fft_scratch_re[off..off + self.n]);
-        self.fft_im[..self.n].copy_from_slice(&self.fft_scratch_im[off..off + self.n]);
+        let rel = rel as usize;
+        self.fft_re[..self.n].copy_from_slice(&self.buf_re[rel..rel + self.n]);
+        self.fft_im[..self.n].copy_from_slice(&self.buf_im[rel..rel + self.n]);
+        fft_forward(self.fft_re.as_mut_ptr(), self.fft_im.as_mut_ptr(), self.n);
 
         let angle = -2.0
             * core::f64::consts::PI
@@ -227,25 +220,9 @@ impl Frontend {
             self.last_gamma_mag = self.sync_out[1];
             self.last_phi = self.sync_out[2];
             let starts = ofdm_sync_starts_ptr(self.sync);
-            let mut rels: Vec<i32> = Vec::with_capacity(count);
             for i in 0..count {
-                let rel = unsafe { *starts.add(i) } as i64 - self.buf_start;
-                if rel < 0 || rel as usize + self.n > self.buf_len {
-                    continue;
-                }
-                rels.push(rel as i32);
-            }
-            if !rels.is_empty() {
-                let n = self.n;
-                self.ensure_fft_scratch(rels.len() * n);
-                let buf_re: &[f32] = &self.buf_re;
-                let buf_im: &[f32] = &self.buf_im;
-                let scratch_re: &mut [f32] = &mut self.fft_scratch_re;
-                let scratch_im: &mut [f32] = &mut self.fft_scratch_im;
-                batch_windows(buf_re, buf_im, &rels, n, scratch_re, scratch_im);
-                for i in 0..rels.len() {
-                    self.process_symbol_bins(i * n);
-                }
+                let start = unsafe { *starts.add(i) };
+                self.process_symbol(start);
             }
             let drop = if self.buf_len > 2 * self.n { self.buf_len - 2 * self.n } else { 0 };
             self.drop_front(drop);
@@ -332,8 +309,6 @@ pub extern "C" fn frontend_create(
         tmcc_carriers,
         fft_re: vec![0.0; fft_size],
         fft_im: vec![0.0; fft_size],
-        fft_scratch_re: Vec::new(),
-        fft_scratch_im: Vec::new(),
         tmcc_re: vec![0.0; tmcc_count],
         tmcc_im: vec![0.0; tmcc_count],
         seg_ref,

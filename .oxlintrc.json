@@ -14,5 +14,5 @@
     "typescript/no-explicit-any": "warn",
     "no-console": "off"
   },
-  "ignorePatterns": ["dist", "coverage", "node_modules", "public/sw.js", "src/dsp/wasm/pkg"]
+  "ignorePatterns": ["dist", "coverage", "node_modules", "public/sw.js"]
 }

@@ -264,8 +264,8 @@ export class OneSegPipeline {
   private lastAcquireLen = 0
   private acqRe = new Float32Array(0)
   private acqIm = new Float32Array(0)
-  private acqBatchRe = new Float32Array(0)
-  private acqBatchIm = new Float32Array(0)
+  private acqFftRe = new Float32Array(0)
+  private acqFftIm = new Float32Array(0)
   private readonly planePool: ComplexBins[] = []
 
   private mode: TransmissionMode | null = null
@@ -502,25 +502,16 @@ export class OneSegPipeline {
     const planes: ComplexBins[] = []
     const half = n >> 1
     const cap = Math.min(starts.length, ACQUIRE_MAX_SYMBOLS)
-    const rels = new Int32Array(cap)
-    let count = 0
+    if (this.acqFftRe.length !== n) {
+      this.acqFftRe = new Float32Array(n)
+      this.acqFftIm = new Float32Array(n)
+    }
+    const fRe = this.acqFftRe
+    const fIm = this.acqFftIm
     for (let s = 0; s < cap; s++) {
       const start = starts[s]
       if (start + n > cRe.length) break
-      rels[count++] = start
-    }
-    if (count === 0) return planes
-
-    const bins = count * n
-    if (this.acqBatchRe.length < bins) {
-      this.acqBatchRe = new Float32Array(bins)
-      this.acqBatchIm = new Float32Array(bins)
-    }
-    const fRe = this.acqBatchRe.subarray(0, bins)
-    const fIm = this.acqBatchIm.subarray(0, bins)
-    this.fft.forwardBatchFrom(cRe, cIm, rels.subarray(0, count), n, fRe, fIm)
-
-    for (let s = 0; s < count; s++) {
+      this.fft.forwardFrom(cRe, cIm, start, n, fRe, fIm)
       let plane = this.planePool[s]
       if (plane === undefined || plane.re.length !== n) {
         plane = { re: new Float32Array(n), im: new Float32Array(n) }
@@ -528,12 +519,11 @@ export class OneSegPipeline {
       }
       const re = plane.re
       const im = plane.im
-      const base = s * n
       // fftshift by `half` as two block copies instead of an elementwise rotate.
-      re.set(fRe.subarray(base, base + half), half)
-      re.set(fRe.subarray(base + half, base + n), 0)
-      im.set(fIm.subarray(base, base + half), half)
-      im.set(fIm.subarray(base + half, base + n), 0)
+      re.set(fRe.subarray(0, half), half)
+      re.set(fRe.subarray(half), 0)
+      im.set(fIm.subarray(0, half), half)
+      im.set(fIm.subarray(half), 0)
       planes.push({ re, im })
     }
     return planes

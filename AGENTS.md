@@ -31,16 +31,6 @@ decoder (`wasm/dsp/src/tmcc.rs`) and channel estimation so no per-symbol interme
 the host. TypeScript reference implementations remain under `src/dsp/stages/` and are compared
 against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
 
-`npm run build:wasm` also builds a Rayon-enabled variant of the same source when the crate
-declares the `threads` feature. That path needs `rustup toolchain install nightly-2025-11-15
---component rust-src` and a matching `wasm-bindgen` CLI (`WASM_BINDGEN=/path/to/wasm-bindgen`),
-and emits `src/dsp/wasm/pkg/` which Vite bundles so `initThreadPool` can spawn workers from
-`workerHelpers.js`. `initDspThreads()` in `src/dsp/wasm/dsp.ts` swaps it in only when the page is
-cross-origin isolated (`SharedArrayBuffer`); otherwise the single-thread base64 module is kept,
-so tests, CI and non-isolated hosts are unaffected. Production on GitHub Pages gets the headers
-via the COOP/COEP injection in `public/sw.js` plus the one-time reload in
-`src/app/registerServiceWorker.ts`.
-
 ## Code conventions
 
 - TypeScript strict, ESM. **No `enum`** (tsconfig has `erasableSyntaxOnly`); use `as const` objects.

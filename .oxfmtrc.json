@@ -4,5 +4,5 @@
   "semi": false,
   "singleQuote": true,
   "trailingComma": "all",
-  "ignorePatterns": ["plans/**", "README.md", "dist/**", "coverage/**", "src/dsp/wasm/pkg/**"]
+  "ignorePatterns": ["plans/**", "README.md", "dist/**", "coverage/**"]
 }

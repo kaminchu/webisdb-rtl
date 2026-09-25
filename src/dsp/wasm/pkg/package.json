@@ -1,9 +1,0 @@
-{
-  "name": "webisdb-dsp-wasm",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "main": "./dsp.js",
-  "module": "./dsp.js",
-  "types": "./dsp.d.ts"
-}

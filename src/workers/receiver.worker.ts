@@ -10,7 +10,6 @@ import type { IqChunk } from '../iq/IQSource'
 import { IQFileSource } from '../iq/IQFileSource'
 import { OneSegPipeline, type OneSegPipelineStats } from '../dsp/pipeline'
 import { WasmFftBackend } from '../dsp/wasm/fft'
-import { initDspThreads } from '../dsp/wasm/dsp'
 import { powerSpectrumDb } from '../dsp/stages/spectrum'
 import { emptyBufferMetrics, emptyReceptionQuality, emptyThroughput } from '../models/reception'
 import type { ReceiverStats } from '../models'
@@ -57,7 +56,7 @@ let uptimeStart = performance.now()
 const inputRate = new RateMeter()
 const tsRate = new RateMeter()
 const dspMs = new RateMeter()
-let fft: WasmFftBackend | null = null
+const fft = new WasmFftBackend()
 let lastStats: OneSegPipelineStats | null = null
 
 function post(event: ReceiverEvent, transfer?: Transferable[]): void {
@@ -108,7 +107,6 @@ function maybeEmitSpectrum(chunk: IqChunk, now: number): void {
   if (chunk.data.length < SPECTRUM_FFT * 2) return
   const floats = new Float32Array(SPECTRUM_FFT * 2)
   for (let i = 0; i < floats.length; i++) floats[i] = (chunk.data[i] - 127.5) / 127.5
-  fft ??= new WasmFftBackend()
   const bins = powerSpectrumDb(floats, SPECTRUM_FFT, fft)
   const copy = bins.slice()
   post(
@@ -271,9 +269,5 @@ ctx.onmessage = (event: MessageEvent<ReceiverCommand>) => {
     postError(error)
   }
 }
-
-// Bring up the Rayon thread pool before any command is dispatched; module
-// evaluation (including this await) completes before queued messages fire.
-await initDspThreads()
 
 post({ type: 'state', state: 'closed' })
