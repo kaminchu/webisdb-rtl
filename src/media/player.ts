@@ -6,6 +6,11 @@ import { AvSync, SyncDecision, microsToPts90k, pts90kToMicros } from './avSync'
 import { VideoStreamDecoder, isKeyframe } from './videoDecoder'
 import type { VideoDecoderConfigInput } from './videoDecoder'
 import { AdtsAssembler, splitAvcAccessUnits } from './elementaryStream'
+import {
+  AvcParameterSetCollector,
+  buildAvcDecoderConfigurationRecord,
+  codecStringFromParameterSets,
+} from './avc'
 
 export interface OneSegPlayerOptions {
   audioContext?: AudioContext
@@ -79,6 +84,8 @@ export class OneSegPlayer {
   private drainHandle: number | ReturnType<typeof setTimeout> | null = null
   private drainUsesAnimationFrame = false
   private videoConfig: AvcConfig | VideoDecoderConfigInput | null = null
+  private avcDescriptionConfigured = false
+  private readonly avcParameterSets = new AvcParameterSetCollector()
   private audioConfig: AudioDecoderConfigInput | null = null
   private lastPts: number | null = null
   private readonly adts = new AdtsAssembler()
@@ -137,6 +144,7 @@ export class OneSegPlayer {
   /** Install the AVC configuration extracted from the PMT descriptor. */
   configureVideo(config: AvcConfig | VideoDecoderConfigInput): void {
     this.videoConfig = config
+    this.avcDescriptionConfigured = 'description' in config && config.description !== undefined
     this.videoDecoder.configure(config)
   }
 
@@ -166,6 +174,7 @@ export class OneSegPlayer {
     if (packet.kind === 'video') {
       this.counters.videoSamples++
       if (packet.pts !== undefined) this.lastPts = packet.pts
+      this.updateVideoConfigFromStream(packet.data)
       if (!this.videoConfig) this.configureVideo(DEFAULT_VIDEO_CONFIG)
       const previous = this.pendingVideo
       this.pendingVideo = packet
@@ -202,6 +211,17 @@ export class OneSegPlayer {
         this.audioDecoder.pushSample(frame.data, frame.timestamp)
       }
     }
+  }
+
+  private updateVideoConfigFromStream(data: Uint8Array): void {
+    if (this.avcDescriptionConfigured) return
+    if (!this.avcParameterSets.push(data)) return
+    const sets = this.avcParameterSets.parameterSets
+    if (!sets) return
+    this.configureVideo({
+      codec: codecStringFromParameterSets(sets),
+      description: buildAvcDecoderConfigurationRecord(sets),
+    })
   }
 
   private scheduleQueueDrain(): void {
@@ -258,6 +278,9 @@ export class OneSegPlayer {
     this.clearQueue()
     this.adts.reset()
     this.pendingVideo = null
+    this.videoConfig = null
+    this.avcDescriptionConfigured = false
+    this.avcParameterSets.reset()
     this.avSync.reset()
     this.videoDecoder.reset()
     this.audioDecoder.reset()
