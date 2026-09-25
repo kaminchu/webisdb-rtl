@@ -5,6 +5,8 @@
 export interface Service {
   /** Service ID from SDT / PMT. */
   serviceId: number
+  /** Physical channel this service was observed on, if known. */
+  physicalChannel?: number
   /** Remote control key ID (channel number shown to users), if known. */
   remoteControlKeyId?: number
   /** Human readable service name. */

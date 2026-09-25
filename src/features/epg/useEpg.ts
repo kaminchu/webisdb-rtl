@@ -3,7 +3,7 @@ import { receiverController } from '../../app/receiverController'
 import { loadStoredScanResults, openAppKeyValueStore } from '../../app/scanController'
 import { useStore } from '../../app/store'
 import type { ConfiguredChannel, Event, Service } from '../../models'
-import { EventRepository, pruneExpiredEvents } from '../../storage'
+import { EventRepository, pruneExpiredEvents, ServiceRepository } from '../../storage'
 
 /** Keep ended programs around briefly so the guide can show the recent past. */
 export const EPG_RETENTION_MS = 3 * 60 * 60 * 1000
@@ -45,6 +45,40 @@ function mergeEvents(events: Event[]): Map<string, Event> {
     if (!existing || preferEvent(event, existing)) merged.set(key, event)
   }
   return merged
+}
+
+function mergeServices(current: Service[], incoming: Service[]): Service[] {
+  const byId = new Map(current.map((service) => [service.serviceId, service]))
+  for (const service of incoming) byId.set(service.serviceId, service)
+  return [...byId.values()]
+}
+
+export interface ServiceChannelSources {
+  channels: ConfiguredChannel[]
+  scanServices: ReadonlyMap<number, Service[]>
+  storedServices: Service[]
+  liveChannel: number | null
+  liveServices: Service[]
+}
+
+/** Map each configured channel to the service IDs known from scans, storage, and the live stream. */
+export function groupServiceIdsByChannel(sources: ServiceChannelSources): Map<number, number[]> {
+  const { channels, scanServices, storedServices, liveChannel, liveServices } = sources
+  const map = new Map<number, number[]>()
+  for (const channel of channels) {
+    const ids = new Set<number>()
+    if (channel.serviceId !== undefined) ids.add(channel.serviceId)
+    for (const service of scanServices.get(channel.physicalChannel) ?? [])
+      ids.add(service.serviceId)
+    for (const service of storedServices) {
+      if (service.physicalChannel === channel.physicalChannel) ids.add(service.serviceId)
+    }
+    if (liveChannel === channel.physicalChannel) {
+      for (const service of liveServices) ids.add(service.serviceId)
+    }
+    map.set(channel.physicalChannel, [...ids])
+  }
+  return map
 }
 
 /**
@@ -113,6 +147,7 @@ export function useEpg(hours = 6): EpgState {
   const liveServices = useStore((state) => state.diagnostics.services)
   const liveChannel = useStore((state) => state.receiver.channel)
   const [storedEvents, setStoredEvents] = useState<Event[]>([])
+  const [storedServices, setStoredServices] = useState<Service[]>([])
   const [scanServices, setScanServices] = useState<Map<number, Service[]>>(new Map())
   const [loading, setLoading] = useState(true)
   const [now, setNow] = useState(() => new Date())
@@ -122,6 +157,7 @@ export function useEpg(hours = 6): EpgState {
       const store = await openAppKeyValueStore()
       await pruneExpiredEvents(store, new Date(), EPG_RETENTION_MS)
       setStoredEvents(await new EventRepository(store).queryEvents({}))
+      setStoredServices(await new ServiceRepository(store).getServices())
     } catch {
       // storage unavailable; live EIT is still shown
     }
@@ -169,6 +205,20 @@ export function useEpg(hours = 6): EpgState {
     }
   }, [eit, reload])
 
+  useEffect(() => {
+    if (liveChannel === null || liveServices.length === 0) return
+    const services = liveServices.map((service) => ({ ...service, physicalChannel: liveChannel }))
+    void (async () => {
+      try {
+        const store = await openAppKeyValueStore()
+        await new ServiceRepository(store).upsertServices(services)
+        setStoredServices((prev) => mergeServices(prev, services))
+      } catch {
+        // storage unavailable
+      }
+    })()
+  }, [liveChannel, liveServices])
+
   const serviceNames = useMemo(() => {
     const map = new Map<number, string>()
     for (const service of liveServices) map.set(service.serviceId, service.name)
@@ -176,24 +226,23 @@ export function useEpg(hours = 6): EpgState {
       for (const service of services)
         if (!map.has(service.serviceId)) map.set(service.serviceId, service.name)
     }
-    return map
-  }, [liveServices, scanServices])
-
-  const serviceIdsByChannel = useMemo(() => {
-    const map = new Map<number, number[]>()
-    for (const channel of channels) {
-      const ids = new Set<number>()
-      if (channel.serviceId !== undefined) ids.add(channel.serviceId)
-      for (const service of scanServices.get(channel.physicalChannel) ?? []) {
-        ids.add(service.serviceId)
-      }
-      if (liveChannel === channel.physicalChannel) {
-        for (const service of liveServices) ids.add(service.serviceId)
-      }
-      map.set(channel.physicalChannel, [...ids])
+    for (const service of storedServices) {
+      if (!map.has(service.serviceId)) map.set(service.serviceId, service.name)
     }
     return map
-  }, [channels, scanServices, liveChannel, liveServices])
+  }, [liveServices, scanServices, storedServices])
+
+  const serviceIdsByChannel = useMemo(
+    () =>
+      groupServiceIdsByChannel({
+        channels,
+        scanServices,
+        storedServices,
+        liveChannel,
+        liveServices,
+      }),
+    [channels, scanServices, storedServices, liveChannel, liveServices],
+  )
 
   const allEvents = useMemo(() => [...storedEvents, ...(eit?.events ?? [])], [storedEvents, eit])
 

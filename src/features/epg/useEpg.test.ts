@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConfiguredChannel, Event } from '../../models'
-import { buildChannelGuide } from './useEpg'
+import { buildChannelGuide, groupServiceIdsByChannel } from './useEpg'
 
 const NOW = new Date('2026-01-01T03:00:00.000Z')
 
@@ -71,6 +71,26 @@ describe('buildChannelGuide', () => {
     )
     expect(guide.entries[0].serviceName).toBe('NST新潟総合テレビ')
     expect(guide.entries[0].events).toHaveLength(1)
+  })
+
+  it('keeps events for a previously viewed channel via stored services', () => {
+    const channels = [channel({ physicalChannel: 19 })]
+    const serviceIds = groupServiceIdsByChannel({
+      channels,
+      scanServices: new Map(),
+      storedServices: [{ serviceId: 99, name: 'NST', physicalChannel: 19 }],
+      liveChannel: 13,
+      liveServices: [],
+    })
+    const guide = buildChannelGuide(
+      channels,
+      [makeEvent({ eventId: 4, serviceId: 99, title: 'NST' })],
+      new Map([[99, 'NST']]),
+      serviceIds,
+      { now: NOW },
+    )
+    expect(guide.entries[0].events).toHaveLength(1)
+    expect(guide.entries[0].events[0].title).toBe('NST')
   })
 
   it('merges duplicate events preferring the running copy', () => {
