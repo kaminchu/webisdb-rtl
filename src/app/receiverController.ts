@@ -38,6 +38,7 @@ export class ReceiverController {
   #tuneTargetHz: number | null = null
   #tuneTask: Promise<void> = Promise.resolve()
   #tuning = false
+  #connectTask: Promise<void> | null = null
 
   constructor(options: ReceiverControllerOptions = {}) {
     this.#player = options.player ?? null
@@ -91,6 +92,20 @@ export class ReceiverController {
   // --- sources -------------------------------------------------------------
 
   async connectRtlSdr(transport?: UsbTransport): Promise<void> {
+    // WebUSB device state changes (open/selectConfiguration/claimInterface) must
+    // not overlap. React StrictMode and rapid UI actions can invoke this twice,
+    // so coalesce every concurrent request into a single connection attempt.
+    if (this.#connectTask) return this.#connectTask
+    const task = this.performConnect(transport)
+    this.#connectTask = task
+    try {
+      await task
+    } finally {
+      if (this.#connectTask === task) this.#connectTask = null
+    }
+  }
+
+  private async performConnect(transport?: UsbTransport): Promise<void> {
     const settings = loadSettings()
     await this.#detachSource()
     const usbTransport = transport ?? (await requestRtlSdrDevice())

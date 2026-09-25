@@ -129,7 +129,21 @@ export class WebUsbTransport implements UsbTransport {
 
   async claimInterface(interfaceNumber: number): Promise<void> {
     if (this.claimedInterfaces.has(interfaceNumber)) return
-    await this.device.claimInterface(interfaceNumber)
+    try {
+      await this.device.claimInterface(interfaceNumber)
+    } catch (originalError) {
+      // WebUSB rejects with NetworkError when the interface is already claimed.
+      // A previous transport can leave a stale claim behind (for example after a
+      // hot reload orphaned it, or a failed attempt), so release and retry once.
+      // If the interface is held by another context this also fails and we
+      // surface the original error.
+      try {
+        await this.device.releaseInterface(interfaceNumber)
+        await this.device.claimInterface(interfaceNumber)
+      } catch {
+        throw originalError
+      }
+    }
     this.claimedInterfaces.add(interfaceNumber)
   }
 
