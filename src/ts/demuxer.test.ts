@@ -247,12 +247,22 @@ describe('Demuxer', () => {
 })
 
 describe('classifyStream', () => {
+  it('does not interpret a download content descriptor as a data component', () => {
+    expect(
+      classifyStream({
+        pid: 1,
+        streamType: 0x06,
+        descriptors: [{ tag: 0xc9, data: Uint8Array.from([0x00, 0x12, 0xad]) }],
+      }),
+    ).toBe('data')
+  })
+
   it.each([0x0008, 0x0012])('recognizes caption data component %i', (id) => {
     expect(
       classifyStream({
         pid: 1,
         streamType: 0x06,
-        descriptors: [{ tag: 0xc9, data: Uint8Array.from([id >> 8, id & 0xff]) }],
+        descriptors: [{ tag: 0xfd, data: Uint8Array.from([id >> 8, id & 0xff]) }],
       }),
     ).toBe('caption')
   })
@@ -262,7 +272,7 @@ describe('classifyStream', () => {
       classifyStream({
         pid: 1,
         streamType: 0x06,
-        descriptors: [{ tag: 0xc9, data: Uint8Array.from([0, 0x0c]) }],
+        descriptors: [{ tag: 0xfd, data: Uint8Array.from([0, 0x0c]) }],
       }),
     ).toBe('data')
   })
@@ -274,7 +284,7 @@ describe('classifyStream', () => {
       classifyStream({
         pid: 1,
         streamType: 0x06,
-        descriptors: [{ tag: 0xc9, data: Uint8Array.from([0x00, 0x08]) }],
+        descriptors: [{ tag: 0xfd, data: Uint8Array.from([0x00, 0x08]) }],
       }),
     ).toBe('caption')
     expect(classifyStream({ pid: 1, streamType: 0x06, descriptors: [] })).toBe('data')

@@ -142,7 +142,7 @@ export function buildContent(genres: number[]): number[] {
 }
 
 export function buildDataComponent(dataComponentId: number, extra: number[] = []): number[] {
-  return buildDescriptor(0xc9, [(dataComponentId >> 8) & 0xff, dataComponentId & 0xff, ...extra])
+  return buildDescriptor(0xfd, [(dataComponentId >> 8) & 0xff, dataComponentId & 0xff, ...extra])
 }
 
 export function buildAvcVideo(profile: number, compatibility: number, level: number): number[] {

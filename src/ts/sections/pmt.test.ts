@@ -21,6 +21,6 @@ describe('decodePmt', () => {
     expect(pmt.streams).toHaveLength(3)
     expect(pmt.streams[0]).toMatchObject({ pid: 0x101, streamType: 0x1b })
     expect(pmt.streams[1].descriptors[0].tag).toBe(0x52)
-    expect(pmt.streams[2].descriptors[0].tag).toBe(0xc9)
+    expect(pmt.streams[2].descriptors[0].tag).toBe(0xfd)
   })
 })

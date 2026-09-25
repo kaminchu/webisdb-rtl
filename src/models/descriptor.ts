@@ -14,5 +14,5 @@ export const DescriptorTag = {
   LocalTimeOffset: 0x58,
   StreamIdentifier: 0x52,
   ParentalRating: 0x55,
-  DataComponent: 0xc9,
+  DataComponent: 0xfd,
 } as const
