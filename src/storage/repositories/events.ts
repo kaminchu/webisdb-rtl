@@ -8,6 +8,50 @@ export function eventKey(event: Event): [number, number] {
   return [event.serviceId, event.eventId]
 }
 
+export function eventEndMs(event: Event): number {
+  return toEpochMs(event.startTime) + event.duration * 1000
+}
+
+function updatedAtMs(event: Event): number {
+  return event.updatedAt ? toEpochMs(event.updatedAt) : 0
+}
+
+/**
+ * Resolve time overlaps, preferring newer `updatedAt` and, on a tie, the event
+ * that appears later in the input. Callers put fresh EIT after cached history so
+ * an updated copy always wins its time slot.
+ */
+export function resolveEventOverlaps(events: Event[]): Event[] {
+  const ranked = events.map((event, order) => ({ event, order }))
+  ranked.sort((a, b) => toEpochMs(a.event.startTime) - toEpochMs(b.event.startTime))
+  const result: { event: Event; order: number }[] = []
+  for (const candidate of ranked) {
+    const previous = result[result.length - 1]
+    if (previous && toEpochMs(candidate.event.startTime) < eventEndMs(previous.event)) {
+      const candidateUpdated = updatedAtMs(candidate.event)
+      const previousUpdated = updatedAtMs(previous.event)
+      const preferNew =
+        candidateUpdated !== previousUpdated
+          ? candidateUpdated > previousUpdated
+          : candidate.order > previous.order
+      if (preferNew) result[result.length - 1] = candidate
+      continue
+    }
+    result.push(candidate)
+  }
+  return result.map((entry) => entry.event)
+}
+
+/**
+ * Merge a fresh EIT snapshot with cached history. Non-overlapping cached events
+ * are kept, while a cached event that overlaps a fresh one is dropped in favour
+ * of the fresh copy, so updates never duplicate a time slot.
+ */
+export function mergeEitSnapshot(cached: Event[], fresh: Event[]): Event[] {
+  if (fresh.length === 0) return cached
+  return resolveEventOverlaps([...cached, ...fresh])
+}
+
 export class EventRepository {
   readonly #store: KeyValueStore
 
@@ -52,6 +96,26 @@ export class EventRepository {
     return this.#store.deleteByIndex(StoreName.Events, EventIndex.ServiceId, {
       only: serviceId,
     })
+  }
+
+  /**
+   * Merge a fresh EIT snapshot into the cache: programs before the snapshot are
+   * preserved, the rest is replaced, and time overlaps prefer the fresh copy.
+   */
+  async replaceEventsForServices(events: Event[]): Promise<void> {
+    if (events.length === 0) return
+    const byService = new Map<number, Event[]>()
+    for (const event of events) {
+      const list = byService.get(event.serviceId) ?? []
+      list.push(event)
+      byService.set(event.serviceId, list)
+    }
+    for (const [serviceId, fresh] of byService) {
+      const cached = await this.queryEvents({ serviceId })
+      const merged = mergeEitSnapshot(cached, fresh)
+      await this.deleteEventsForService(serviceId)
+      await this.putEvents(merged)
+    }
   }
 }
 

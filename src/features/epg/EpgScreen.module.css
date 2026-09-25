@@ -105,6 +105,13 @@
   color: var(--color-text-muted);
 }
 
+.channelNameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
 .channelName {
   font-size: 12px;
   font-weight: 600;

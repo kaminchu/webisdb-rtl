@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { receiverController } from '../../app/receiverController'
 import { loadStoredScanResults, openAppKeyValueStore } from '../../app/scanController'
 import { useStore } from '../../app/store'
@@ -7,6 +7,13 @@ import { EventRepository, pruneExpiredEvents, ServiceRepository } from '../../st
 
 /** Keep ended programs around briefly so the guide can show the recent past. */
 export const EPG_RETENTION_MS = 3 * 60 * 60 * 1000
+
+/**
+ * EIT arrives as many small sections per service. Wait until a service stops
+ * reporting before replacing its cache wholesale, so programs from other tables
+ * are never dropped in between.
+ */
+export const EIT_SETTLE_MS = 3000
 
 export interface ChannelGuideEntry {
   physicalChannel: number
@@ -138,7 +145,6 @@ export interface EpgState {
   guide: ChannelGuide
   loading: boolean
   selectChannel(entry: ChannelGuideEntry): void
-  refresh(): void
 }
 
 export function useEpg(hours = 6): EpgState {
@@ -186,24 +192,67 @@ export function useEpg(hours = 6): EpgState {
     return () => window.clearInterval(timer)
   }, [])
 
-  useEffect(() => {
-    if (!eit || eit.events.length === 0) return
-    let active = true
-    const receivedAt = new Date()
-    const events = eit.events.map((event) => ({ ...event, updatedAt: receivedAt }))
-    void (async () => {
+  const pendingEit = useRef(new Map<number, Map<number, Event>>())
+  const flushTimers = useRef(new Map<number, number>())
+  const mountedRef = useRef(true)
+
+  const flushService = useCallback(
+    async (serviceId: number) => {
+      const timer = flushTimers.current.get(serviceId)
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        flushTimers.current.delete(serviceId)
+      }
+      const buffered = pendingEit.current.get(serviceId)
+      if (!buffered || buffered.size === 0) return
+      pendingEit.current.delete(serviceId)
+      const events = [...buffered.values()]
       try {
         const store = await openAppKeyValueStore()
-        await new EventRepository(store).putEvents(events)
+        await new EventRepository(store).replaceEventsForServices(events)
       } catch {
         // storage unavailable
       }
-      if (active) await reload()
-    })()
+      if (mountedRef.current) await reload()
+    },
+    [reload],
+  )
+
+  const scheduleFlush = useCallback(
+    (serviceId: number) => {
+      const existing = flushTimers.current.get(serviceId)
+      if (existing !== undefined) window.clearTimeout(existing)
+      const timer = window.setTimeout(() => {
+        flushTimers.current.delete(serviceId)
+        void flushService(serviceId)
+      }, EIT_SETTLE_MS)
+      flushTimers.current.set(serviceId, timer)
+    },
+    [flushService],
+  )
+
+  useEffect(() => {
+    mountedRef.current = true
+    const timers = flushTimers.current
     return () => {
-      active = false
+      mountedRef.current = false
+      for (const timer of timers.values()) window.clearTimeout(timer)
+      timers.clear()
     }
-  }, [eit, reload])
+  }, [])
+
+  useEffect(() => {
+    if (!eit || eit.events.length === 0) return
+    const receivedAt = new Date()
+    for (const raw of eit.events) {
+      const event = { ...raw, updatedAt: receivedAt }
+      const buffered = pendingEit.current.get(event.serviceId) ?? new Map<number, Event>()
+      buffered.set(event.eventId, event)
+      pendingEit.current.set(event.serviceId, buffered)
+    }
+    for (const serviceId of new Set(eit.events.map((event) => event.serviceId)))
+      scheduleFlush(serviceId)
+  }, [eit, scheduleFlush])
 
   useEffect(() => {
     if (liveChannel === null || liveServices.length === 0) return
@@ -244,7 +293,7 @@ export function useEpg(hours = 6): EpgState {
     [channels, scanServices, storedServices, liveChannel, liveServices],
   )
 
-  const allEvents = useMemo(() => [...storedEvents, ...(eit?.events ?? [])], [storedEvents, eit])
+  const allEvents = storedEvents
 
   const guide = useMemo(
     () => buildChannelGuide(channels, allEvents, serviceNames, serviceIdsByChannel, { hours, now }),
@@ -255,10 +304,5 @@ export function useEpg(hours = 6): EpgState {
     void receiverController.tunePhysicalChannel(entry.physicalChannel)
   }, [])
 
-  const refresh = useCallback(() => {
-    setNow(new Date())
-    void reload()
-  }, [reload])
-
-  return { guide, loading, selectChannel, refresh }
+  return { guide, loading, selectChannel }
 }

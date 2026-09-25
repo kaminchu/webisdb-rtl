@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Event } from '../../models'
 import { createMemoryKeyValueStore } from '../db'
-import { EventRepository, pruneExpiredEvents } from './events'
+import {
+  EventRepository,
+  mergeEitSnapshot,
+  pruneExpiredEvents,
+  resolveEventOverlaps,
+} from './events'
 
 function makeEvent(overrides: Partial<Event> & { serviceId: number; eventId: number }): Event {
   return {
@@ -16,6 +21,99 @@ function createRepo() {
   const store = createMemoryKeyValueStore()
   return { store, repo: new EventRepository(store) }
 }
+
+describe('resolveEventOverlaps', () => {
+  it('drops the older copy when two events overlap', () => {
+    const older = makeEvent({
+      serviceId: 1,
+      eventId: 1,
+      title: 'older',
+      startTime: new Date('2026-01-01T01:00:00Z'),
+      duration: 3600,
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+    })
+    const newer = makeEvent({
+      serviceId: 1,
+      eventId: 2,
+      title: 'newer',
+      startTime: new Date('2026-01-01T01:30:00Z'),
+      duration: 1800,
+      updatedAt: new Date('2026-01-01T02:00:00Z'),
+    })
+    expect(resolveEventOverlaps([older, newer]).map((event) => event.title)).toEqual(['newer'])
+  })
+
+  it('keeps non-overlapping events in start order', () => {
+    const first = makeEvent({
+      serviceId: 1,
+      eventId: 1,
+      startTime: new Date('2026-01-01T01:00:00Z'),
+      duration: 1800,
+    })
+    const second = makeEvent({
+      serviceId: 1,
+      eventId: 2,
+      startTime: new Date('2026-01-01T02:00:00Z'),
+      duration: 1800,
+    })
+    expect(resolveEventOverlaps([second, first]).map((event) => event.eventId)).toEqual([1, 2])
+  })
+})
+
+describe('mergeEitSnapshot', () => {
+  const cached = [
+    makeEvent({
+      serviceId: 1,
+      eventId: 1,
+      title: 'history',
+      startTime: new Date('2026-01-01T00:00:00Z'),
+      duration: 1800,
+    }),
+    makeEvent({
+      serviceId: 1,
+      eventId: 2,
+      title: 'future stale',
+      startTime: new Date('2026-01-01T03:00:00Z'),
+      duration: 1800,
+    }),
+  ]
+
+  it('keeps non-overlapping cache and adds the fresh snapshot', () => {
+    const fresh = [
+      makeEvent({
+        serviceId: 1,
+        eventId: 9,
+        title: 'fresh',
+        startTime: new Date('2026-01-01T01:00:00Z'),
+        duration: 1800,
+      }),
+    ]
+    const merged = mergeEitSnapshot(cached, fresh)
+    expect(merged.map((event) => event.title).toSorted()).toEqual([
+      'fresh',
+      'future stale',
+      'history',
+    ])
+  })
+
+  it('prefers the fresh copy when it overlaps cached history', () => {
+    const merged = mergeEitSnapshot(cached, [
+      makeEvent({
+        serviceId: 1,
+        eventId: 9,
+        title: 'fresh',
+        startTime: new Date('2026-01-01T03:00:00Z'),
+        duration: 1800,
+        updatedAt: new Date('2026-01-01T03:00:00Z'),
+      }),
+    ])
+    expect(merged.map((event) => event.title).toSorted()).toEqual(['fresh', 'history'])
+  })
+
+  it('returns the cache unchanged when the snapshot is empty', () => {
+    expect(mergeEitSnapshot(cached, [])).toBe(cached)
+  })
+})
 
 describe('EventRepository', () => {
   it('queries all events ordered by start time', async () => {
@@ -75,6 +173,101 @@ describe('EventRepository', () => {
     ])
     expect(await repo.deleteEventsForService(1)).toBe(2)
     expect(await repo.queryEvents()).toHaveLength(1)
+  })
+
+  it('keeps the cache before the snapshot and replaces overlapping programs', async () => {
+    const { repo } = createRepo()
+    await repo.putEvents([
+      makeEvent({
+        serviceId: 1,
+        eventId: 1,
+        title: 'old history',
+        startTime: new Date('2026-01-01T00:00:00Z'),
+        duration: 1800,
+      }),
+      makeEvent({
+        serviceId: 1,
+        eventId: 2,
+        title: 'stale overlapping',
+        startTime: new Date('2026-01-01T01:00:00Z'),
+        duration: 3600,
+      }),
+      makeEvent({
+        serviceId: 3,
+        eventId: 4,
+        title: 'untouched service',
+        startTime: new Date('2026-01-01T02:00:00Z'),
+        duration: 1800,
+      }),
+    ])
+    await repo.replaceEventsForServices([
+      makeEvent({
+        serviceId: 1,
+        eventId: 9,
+        title: 'fresh',
+        startTime: new Date('2026-01-01T01:00:00Z'),
+        duration: 1800,
+      }),
+    ])
+    const events = await repo.queryEvents()
+    expect(events.map((event) => event.title).toSorted()).toEqual([
+      'fresh',
+      'old history',
+      'untouched service',
+    ])
+    expect(events.filter((event) => event.serviceId === 1).map((event) => event.eventId)).toEqual([
+      1, 9,
+    ])
+  })
+
+  it('keeps non-overlapping cached programs after the snapshot start', async () => {
+    const { repo } = createRepo()
+    await repo.putEvents([
+      makeEvent({
+        serviceId: 1,
+        eventId: 1,
+        title: 'later cached',
+        startTime: new Date('2026-01-01T05:00:00Z'),
+        duration: 1800,
+      }),
+    ])
+    await repo.replaceEventsForServices([
+      makeEvent({
+        serviceId: 1,
+        eventId: 9,
+        title: 'fresh',
+        startTime: new Date('2026-01-01T01:00:00Z'),
+        duration: 1800,
+      }),
+    ])
+    const events = await repo.queryEvents()
+    expect(events.map((event) => event.title)).toEqual(['fresh', 'later cached'])
+  })
+
+  it('prefers the fresh copy when times overlap', async () => {
+    const { repo } = createRepo()
+    await repo.putEvents([
+      makeEvent({
+        serviceId: 1,
+        eventId: 1,
+        title: 'cached',
+        startTime: new Date('2026-01-01T01:00:00Z'),
+        duration: 3600,
+        updatedAt: new Date('2026-01-01T00:00:00Z'),
+      }),
+    ])
+    await repo.replaceEventsForServices([
+      makeEvent({
+        serviceId: 1,
+        eventId: 2,
+        title: 'fresh',
+        startTime: new Date('2026-01-01T01:30:00Z'),
+        duration: 1800,
+        updatedAt: new Date('2026-01-01T01:30:00Z'),
+      }),
+    ])
+    const events = await repo.queryEvents()
+    expect(events.map((event) => event.title)).toEqual(['fresh'])
   })
 })
 

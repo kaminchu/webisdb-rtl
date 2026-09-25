@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { navigate } from '../../app/navigation'
 import { Screen, useStore } from '../../app/store'
 import { Button } from '../../components/Button'
+import { Spinner } from '../../components/Spinner'
 import type { Event } from '../../models'
 import { MenuButton } from '../shell/MenuButton'
 import { buildProgramCell, buildTimeMarks, offsetMinutes } from './layout'
@@ -10,6 +11,7 @@ import { ProgramModal } from './ProgramModal'
 import { formatJstDateTime, formatJstTime } from './time'
 import type { ChannelGuideEntry } from './useEpg'
 import { useEpg } from './useEpg'
+import { useEpgFetch } from './useEpgFetch'
 import styles from './EpgScreen.module.css'
 import timetableStyles from './timetable.module.css'
 
@@ -27,7 +29,8 @@ interface SelectedProgram {
 }
 
 export function EpgScreen() {
-  const { guide, loading, selectChannel, refresh } = useEpg(6)
+  const { guide, loading, selectChannel } = useEpg(6)
+  const fetch = useEpgFetch()
   const currentChannel = useStore((s) => s.receiver.channel)
   const [selected, setSelected] = useState<SelectedProgram | null>(null)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -68,6 +71,7 @@ export function EpgScreen() {
 
   const renderHeader = (entry: ChannelGuideEntry) => {
     const active = currentChannel === entry.physicalChannel
+    const fetching = fetch.fetching.includes(entry.physicalChannel)
     return (
       <button
         key={entry.physicalChannel}
@@ -77,7 +81,10 @@ export function EpgScreen() {
         onClick={() => selectChannel(entry)}
       >
         <span className={styles.channelNumber}>ch {entry.physicalChannel}</span>
-        <span className={styles.channelName}>{entry.serviceName}</span>
+        <span className={styles.channelNameRow}>
+          <span className={styles.channelName}>{entry.serviceName}</span>
+          {fetching && <Spinner label={`ch ${entry.physicalChannel} の番組情報を取得中`} />}
+        </span>
       </button>
     )
   }
@@ -121,9 +128,15 @@ export function EpgScreen() {
         <Button size="sm" onClick={scrollToNow}>
           現在時刻
         </Button>
-        <Button size="sm" onClick={refresh} disabled={loading}>
-          更新
-        </Button>
+        {fetch.running ? (
+          <Button size="sm" variant="danger" onClick={fetch.cancel}>
+            キャンセル
+          </Button>
+        ) : (
+          <Button size="sm" variant="primary" onClick={() => void fetch.start()}>
+            番組表取得
+          </Button>
+        )}
       </header>
 
       {loading ? (
