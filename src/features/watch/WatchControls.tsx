@@ -11,6 +11,8 @@ export interface WatchControlsProps {
   audioChannel: AudioChannelMode
   subtitles: boolean
   debugOverlay: boolean
+  className?: string
+  onActivate?(): void
   onAudioChange(mode: AudioChannelMode): void
   onToggleSubtitles(): void
   onToggleDebugOverlay(): void
@@ -20,12 +22,18 @@ export function WatchControls({
   audioChannel,
   subtitles,
   debugOverlay,
+  className,
+  onActivate,
   onAudioChange,
   onToggleSubtitles,
   onToggleDebugOverlay,
 }: WatchControlsProps) {
   return (
-    <div className={styles.controls} onClick={(event) => event.stopPropagation()}>
+    <div
+      className={[styles.controls, className].filter(Boolean).join(' ')}
+      onPointerDown={onActivate}
+      onClick={(event) => event.stopPropagation()}
+    >
       <div className={styles.group}>
         <span className={styles.caption}>音声</span>
         <div className={styles.options}>

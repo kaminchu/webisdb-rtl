@@ -17,6 +17,7 @@ export function WatchScreen() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const playerRef = useRef<OneSegPlayer | null>(null)
   const [overlayOpen, setOverlayOpen] = useState(false)
+  const [guideOnTop, setGuideOnTop] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [audioChannel, setAudioChannel] = useState<AudioChannelMode>(
     () => loadSettings().ui.audioChannel,
@@ -65,7 +66,9 @@ export function WatchScreen() {
       void connect()
       return
     }
-    setOverlayOpen((open) => !open)
+    const next = !overlayOpen
+    setOverlayOpen(next)
+    if (next) setGuideOnTop(false)
   }
 
   const changeAudio = (mode: AudioChannelMode) => {
@@ -122,13 +125,21 @@ export function WatchScreen() {
               audioChannel={audioChannel}
               subtitles={subtitles}
               debugOverlay={showDebug}
+              className={guideOnTop ? undefined : styles.controlsFront}
+              onActivate={() => setGuideOnTop(false)}
               onAudioChange={changeAudio}
               onToggleSubtitles={toggleSubtitles}
               onToggleDebugOverlay={toggleDebug}
             />
 
             {!docked && (
-              <div className={styles.guideLayer} onClick={(event) => event.stopPropagation()}>
+              <div
+                className={
+                  guideOnTop ? `${styles.guideLayer} ${styles.guideLayerFront}` : styles.guideLayer
+                }
+                onPointerDown={() => setGuideOnTop(true)}
+                onClick={(event) => event.stopPropagation()}
+              >
                 <CompactGuide />
               </div>
             )}

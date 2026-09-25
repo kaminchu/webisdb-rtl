@@ -88,6 +88,14 @@
   max-height: 45%;
 }
 
+.guideLayerFront {
+  z-index: 8;
+}
+
+.controlsFront {
+  z-index: 8;
+}
+
 .guideLayer > * {
   flex: 1 1 auto;
   min-height: 0;
