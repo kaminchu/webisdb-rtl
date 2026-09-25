@@ -42,6 +42,10 @@ const MAX_BUFFERED_PES = 1024
 // Video access-unit timing needs the following PES; decode before its PTS is due.
 const DECODE_AHEAD_SEC = 1
 const CAPTURE_FPS = 30
+// Detect a frozen video pipeline: packets keep arriving but no frame is drawn.
+const STALL_CHECK_SEC = 2.5
+// A forward PTS step larger than this is a dropout/re-acquisition discontinuity.
+const MAX_PTS_JUMP_SEC = 2
 
 interface BufferedPes {
   packet: PesPacket
@@ -92,6 +96,11 @@ export class OneSegPlayer {
   private lastPts: number | null = null
   private readonly adts = new AdtsAssembler()
   private pendingVideo: PesPacket | null = null
+  private lastIncomingPtsSec: number | null = null
+  private stallCheckAt = 0
+  private stallFrames = 0
+  private stallVideoSamples = 0
+  private hadVideoFrame = false
   private counters = {
     videoSamples: 0,
     audioSamples: 0,
@@ -158,6 +167,20 @@ export class OneSegPlayer {
 
   pushPes(packet: PesPacket): void {
     if (
+      packet.pts !== undefined &&
+      (packet.kind === 'video' || packet.kind === 'audio') &&
+      this.lastIncomingPtsSec !== null &&
+      packet.pts / 90_000 - this.lastIncomingPtsSec > MAX_PTS_JUMP_SEC
+    ) {
+      // A dropout/re-acquisition jumped the timeline. Skip the lost interval and
+      // present the new timeline immediately instead of waiting for the clock.
+      this.recover()
+      this.avSync.anchor(packet.pts, 0)
+    }
+    if (packet.pts !== undefined && (packet.kind === 'video' || packet.kind === 'audio')) {
+      this.lastIncomingPtsSec = packet.pts / 90_000
+    }
+    if (
       !this.avSync.anchored &&
       packet.pts !== undefined &&
       (packet.kind === 'video' || packet.kind === 'audio')
@@ -175,6 +198,41 @@ export class OneSegPlayer {
     if (this.queueTimer !== null) clearTimeout(this.queueTimer)
     this.queueTimer = null
     this.drainQueue()
+    this.checkStall()
+  }
+
+  /**
+   * Nudge the decoders and sync clock when video packets keep arriving but no
+   * frame has been presented for a while. This recovers from decoder errors and
+   * PTS discontinuities without tearing down the configured codecs.
+   */
+  private checkStall(): void {
+    const now = this.now()
+    if (this.stallCheckAt === 0) {
+      this.stallCheckAt = now
+      this.stallFrames = this.counters.videoFramesDecoded
+      this.stallVideoSamples = this.counters.videoSamples
+      return
+    }
+    if (now - this.stallCheckAt < STALL_CHECK_SEC) return
+    const progressed = this.counters.videoFramesDecoded !== this.stallFrames
+    const receiving = this.counters.videoSamples !== this.stallVideoSamples
+    this.stallCheckAt = now
+    this.stallFrames = this.counters.videoFramesDecoded
+    this.stallVideoSamples = this.counters.videoSamples
+    if (!progressed && receiving && this.hadVideoFrame) this.recover()
+  }
+
+  /** Re-key decoders and reset the sync clock while keeping codec config. */
+  recover(): void {
+    this.clearQueue()
+    this.adts.reset()
+    this.pendingVideo = null
+    this.lastIncomingPtsSec = null
+    this.avSync.reset()
+    this.videoDecoder.reset()
+    this.audioDecoder.reset()
+    this.clearPending()
   }
 
   private routePes(packet: PesPacket): void {
@@ -334,6 +392,7 @@ export class OneSegPlayer {
         }
       }
       this.counters.videoFramesDecoded++
+      this.hadVideoFrame = true
     } finally {
       frame.close()
     }

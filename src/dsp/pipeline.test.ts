@@ -106,6 +106,7 @@ function pushFile(
 }
 
 const IQ_FILES = ['/tmp/opencode/iq/all19.iq', '/tmp/opencode/iq/all23.iq']
+const LIVE_IQ = '/tmp/opencode/iq/live17.iq'
 
 describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', () => {
   it.each([-1, 1])(
@@ -146,6 +147,47 @@ describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', 
       120_000,
     )
   }
+})
+
+describe.skipIf(!existsSync(LIVE_IQ))('OneSegPipeline lock recovery', () => {
+  it('re-acquires and emits TS after a signal dropout', () => {
+    const raw = new Uint8Array(readFileSync(LIVE_IQ))
+    const rate = 1_200_000
+    for (let i = Math.floor(6 * rate) * 2; i < Math.floor(8 * rate) * 2 && i < raw.length; i++) {
+      raw[i] = 128
+    }
+    let nowMs = 0
+    let syncAfterGap = 0
+    const states: PipelineState[] = []
+    const pipe = new OneSegPipeline(
+      {
+        onState: (s) => states.push(s),
+        onTs: (bytes) => {
+          if (nowMs / 1000 < 9) return
+          for (let i = 0; i + 188 <= bytes.length; i += 188) {
+            if (bytes[i] === 0x47) syncAfterGap++
+          }
+        },
+      },
+      { clock: () => nowMs },
+    )
+    const CHUNK = 16 * 1024
+    let seq = 0
+    for (let off = 0; off < raw.length; off += CHUNK) {
+      nowMs = (off / 2 / rate) * 1000
+      pipe.pushIq({
+        data: raw.subarray(off, Math.min(off + CHUNK, raw.length)),
+        format: 'u8',
+        sampleRate: rate,
+        centerFrequency: 497_142_857,
+        sequence: seq++,
+        timestamp: nowMs,
+      })
+    }
+    pipe.flush()
+    expect(states).toContain('acquiring')
+    expect(syncAfterGap).toBeGreaterThan(0)
+  }, 300_000)
 })
 
 function synthU8(symbols: number, n: number, cp: number): Uint8Array {

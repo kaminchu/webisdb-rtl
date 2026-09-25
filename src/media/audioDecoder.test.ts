@@ -105,6 +105,18 @@ describe('audio scheduling', () => {
     decoder.close()
   })
 
+  it('re-anchors on a large PTS jump instead of dropping audio forever', () => {
+    const { decoder, sources, emit } = setup()
+    emit(0)
+    expect(sources).toHaveLength(1)
+    // A dropout jumps the timeline past the scheduling window; without a
+    // re-anchor every later buffer is rejected as "too far ahead".
+    emit(5_000_000)
+    expect(sources).toHaveLength(2)
+    expect(sources[1].start).toHaveBeenCalledWith(0.05, 0)
+    decoder.close()
+  })
+
   it('clears scheduled audio and its clock on reset', () => {
     const { decoder, sources, emit } = setup()
     emit(0)

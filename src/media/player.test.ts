@@ -98,6 +98,18 @@ describe('OneSegPlayer jitter buffer', () => {
     player.close()
   })
 
+  it('re-anchors immediately when the PTS jumps past the buffering window', () => {
+    const player = new OneSegPlayer(document.createElement('canvas'), {
+      bufferSec: 3,
+      clock: () => 0,
+    })
+    player.pushPes(packet('video', 90_000))
+    player.pushPes(packet('video', 900_000))
+    const avSync = (player as unknown as { avSync: { anchoredPtsSec: number | null } }).avSync
+    expect(avSync.anchoredPtsSec).toBeCloseTo(10)
+    player.close()
+  })
+
   it('drops queued packets and timers on reset', () => {
     vi.useFakeTimers()
     const player = new OneSegPlayer(document.createElement('canvas'), {

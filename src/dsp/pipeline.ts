@@ -58,6 +58,10 @@ export interface OneSegPipelineOptions {
   sourceSampleRate?: number
   /** Resampler low-pass cutoff in Hz (default 450 kHz). */
   cutoffHz?: number
+  /** Re-acquire after this long without new TS while locked (default 1500 ms). */
+  lockStallMs?: number
+  /** Monotonic clock in milliseconds; overridable for tests. */
+  clock?: () => number
 }
 
 const ACQUIRE_MIN_SAMPLES = 750_000
@@ -65,6 +69,7 @@ const ACQUIRE_MAX_SYMBOLS = 900
 const TMCC_CFO_RANGE = 320
 const TS_BATCH_SYMBOLS = 32
 const MER_INTERVAL = 4
+const DEFAULT_LOCK_STALL_MS = 1500
 
 const CANDIDATES: readonly (readonly [TransmissionMode, number])[] = [
   [3, 8],
@@ -214,7 +219,9 @@ function estimateSpPhase(
 
 export class OneSegPipeline {
   private readonly callbacks: OneSegPipelineCallbacks
-  private readonly options: Required<OneSegPipelineOptions>
+  private readonly options: Required<Pick<OneSegPipelineOptions, 'sourceSampleRate' | 'cutoffHz'>>
+  private readonly lockStallMs: number
+  private readonly clock: () => number
   private readonly dc = new WasmDcRemoval(0.001)
   private resampler: WasmFractionalResampler
   private readonly fft = new WasmFftBackend()
@@ -263,6 +270,8 @@ export class OneSegPipeline {
   private lastPhi = 0
   private lastSignalPower = 0
   private lastMerDb: number | null = null
+  private lastProgressAt = 0
+  private lastProgressTsBytes = 0
 
   constructor(callbacks: OneSegPipelineCallbacks = {}, options: OneSegPipelineOptions = {}) {
     this.callbacks = callbacks
@@ -270,6 +279,10 @@ export class OneSegPipeline {
       sourceSampleRate: options.sourceSampleRate ?? 1_200_000,
       cutoffHz: options.cutoffHz ?? 450_000,
     }
+    this.lockStallMs = options.lockStallMs ?? DEFAULT_LOCK_STALL_MS
+    this.clock =
+      options.clock ??
+      (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now())
     this.resampler = new WasmFractionalResampler(
       this.options.sourceSampleRate,
       ONESEG_SAMPLING_HZ,
@@ -310,6 +323,7 @@ export class OneSegPipeline {
 
     if (this.state === 'locked') {
       this.processLocked()
+      this.checkLockLoss()
     } else if (
       this.bufLen >= ACQUIRE_MIN_SAMPLES &&
       this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
@@ -318,6 +332,49 @@ export class OneSegPipeline {
       this.tryAcquire()
     }
     this.emitStats()
+  }
+
+  /**
+   * A locked pipeline free-runs: if the signal degrades, symbol starts keep
+   * coming from the tracking synchronizer but FEC fails, so TS stops without an
+   * error. Fall back to acquisition once output has stalled so a dropout can
+   * recover instead of freezing playback forever.
+   */
+  private checkLockLoss(): void {
+    if (this.tsBytes !== this.lastProgressTsBytes) {
+      this.lastProgressTsBytes = this.tsBytes
+      this.lastProgressAt = this.clock()
+      return
+    }
+    if (this.clock() - this.lastProgressAt > this.lockStallMs) this.releaseLock()
+  }
+
+  private releaseLock(): void {
+    this.nco?.dispose()
+    this.sync?.dispose()
+    this.demapper?.dispose()
+    this.oneSeg?.dispose()
+    this.nco = null
+    this.sync = null
+    this.demapper = null
+    this.oneSeg = null
+    this.tmcc = null
+    this.tmccInfo = null
+    this.pendingCount = 0
+    this.mode = null
+    this.gi = null
+    this.integerCarrierOffset = 0
+    this.fractionalOffsetHz = null
+    this.frameStartSymbol = 0
+    this.symbolIndex = 0
+    // Buffered samples were rotated by the locked NCO; discard them so the new
+    // acquisition applies its own frequency correction to fresh samples.
+    this.bufLen = 0
+    this.bufferStart = 0
+    this.derotatedUpTo = 0
+    this.syncFed = 0
+    this.lastAcquireLen = 0
+    this.setState('acquiring')
   }
 
   /** Force acquisition with whatever is buffered and flush pending TS. */
@@ -361,6 +418,8 @@ export class OneSegPipeline {
     this.fractionalOffsetHz = null
     this.frameStartSymbol = 0
     this.symbolIndex = 0
+    this.lastProgressAt = this.clock()
+    this.lastProgressTsBytes = this.tsBytes
     this.setState('idle')
   }
 
@@ -557,6 +616,8 @@ export class OneSegPipeline {
     this.symbolIndex = 0
     this.derotatedUpTo = 0
     this.syncFed = 0
+    this.lastProgressAt = this.clock()
+    this.lastProgressTsBytes = this.tsBytes
     this.callbacks.onTmcc?.(info)
     this.setState('locked')
   }

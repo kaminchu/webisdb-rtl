@@ -208,6 +208,17 @@ export class AudioStreamDecoder {
       const delay = this.playbackTime ? ptsSec - this.playbackTime() : LEAD_SEC
       this.baseContextTime = now + Math.max(LEAD_SEC, delay)
       this.basePtsSec = ptsSec
+    } else {
+      // A large forward/backward PTS jump (signal dropout, re-acquisition) must
+      // re-anchor the clock, otherwise every later buffer is dropped as "ahead"
+      // or "late" and audio never returns.
+      const expected = this.basePtsSec + (now - this.baseContextTime)
+      if (Math.abs(ptsSec - expected) > this.maxQueueSec) {
+        this.stopQueued()
+        this.baseContextTime = now + LEAD_SEC
+        this.basePtsSec = ptsSec
+        this.scheduledUntil = 0
+      }
     }
     let when = this.baseContextTime + (ptsSec - this.basePtsSec)
     if (when + duration <= now) return

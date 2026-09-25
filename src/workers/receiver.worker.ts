@@ -216,7 +216,14 @@ const handlers: {
     inputRate.add(Math.floor(data.length / 2))
     maybeEmitSpectrum(chunk, performance.now())
     const t0 = performance.now()
-    pipeline?.pushIq(chunk)
+    try {
+      pipeline?.pushIq(chunk)
+    } catch (error) {
+      // A corrupt chunk must not poison the pipeline permanently; drop buffered
+      // state and let acquisition restart on the next samples.
+      pipeline?.discardBuffer()
+      postError(error)
+    }
     dspMs.add(performance.now() - t0)
   },
   tune: () => {

@@ -55,10 +55,7 @@ class Scratch {
     const len = re.length
     if (len === 0) return
     if (len > this.cap) {
-      if (this.cap > 0) {
-        wasmFree(this.wasm, this.pRe, this.cap * 4)
-        wasmFree(this.wasm, this.pIm, this.cap * 4)
-      }
+      this.release()
       this.pRe = wasmAlloc(this.wasm, len * 4)
       this.pIm = wasmAlloc(this.wasm, len * 4)
       this.cap = len
@@ -66,6 +63,16 @@ class Scratch {
     const heap = new WasmHeap(this.wasm.memory)
     heap.f32(this.pRe, len).set(re)
     heap.f32(this.pIm, len).set(im)
+  }
+
+  release(): void {
+    if (this.cap > 0) {
+      wasmFree(this.wasm, this.pRe, this.cap * 4)
+      wasmFree(this.wasm, this.pIm, this.cap * 4)
+      this.pRe = 0
+      this.pIm = 0
+      this.cap = 0
+    }
   }
 }
 
@@ -97,6 +104,7 @@ export class WasmOfdmSynchronizer {
   dispose(): void {
     ;(this.wasm.exports.ofdm_sync_destroy as ResetSyncFn)(this.state)
     wasmFree(this.wasm, this.out, SYNC_FIELDS * 8)
+    this.scratch.release()
   }
 
   process(re: Float32Array, im: Float32Array): OfdmSyncResult {
@@ -169,5 +177,6 @@ export class WasmFrequencyOffsetEstimator {
 
   dispose(): void {
     wasmFree(this.wasm, this.out, ESTIMATE_FIELDS * 8)
+    this.scratch.release()
   }
 }
