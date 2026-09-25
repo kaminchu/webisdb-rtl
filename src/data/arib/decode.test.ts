@@ -36,6 +36,19 @@ describe('decodeAribText', () => {
   it('decodes ARIB additional symbols', () => {
     expect(decodeAribText(Uint8Array.from([0x75, 0x21]))).toBe('㐂')
   })
+
+  it('decodes the single-byte kana punctuation tail', () => {
+    expect(decodeAribText(Uint8Array.from([0x1b, 0x7c, 0xad, 0xe6, 0xf9, 0xd4, 0xf9]))).toBe(
+      'キユーピー',
+    )
+    expect(decodeAribText(Uint8Array.from([0xf7, 0xf8]))).toBe('ゝゞ')
+    expect(decodeAribText(Uint8Array.from([0xf9, 0xfa, 0xfb, 0xfc]))).toBe('ー。「」')
+    expect(decodeAribText(Uint8Array.from([0x1b, 0x7c, 0xf7, 0xf8]))).toBe('ヽヾ')
+  })
+
+  it('decodes additional symbols invoked through the extra-symbols set', () => {
+    expect(decodeAribText(Uint8Array.from([0x1b, 0x24, 0x3b, 0x0f, 0x7a, 0x56]))).toBe('🈑')
+  })
 })
 
 describe('tokenizeAribText', () => {

@@ -27,7 +27,11 @@ const PID_NIT = 0x0010
 const PID_SDT = 0x0011
 const PID_EIT = 0x0012
 const PID_TDT_TOT = 0x0014
-const PID_EIT_OTHER = 0x0026
+const PID_EIT_MOBILE = 0x0026
+const PID_EIT_PARTIAL = 0x0027
+
+/** ARIB STD-B10 Table 5-1: terrestrial EIT is carried on 0x12, 0x26 and 0x27. */
+const EIT_PIDS = new Set([PID_EIT, PID_EIT_MOBILE, PID_EIT_PARTIAL])
 
 /**
  * ISDB-T one-seg PMT PID range. The partial-reception stream carries no
@@ -151,8 +155,7 @@ export class Demuxer {
       pid === PID_PAT ||
       pid === PID_NIT ||
       pid === PID_SDT ||
-      pid === PID_EIT ||
-      pid === PID_EIT_OTHER ||
+      EIT_PIDS.has(pid) ||
       pid === PID_TDT_TOT ||
       this.pmtPids.has(pid) ||
       this.isOneSegPmt(pid)
@@ -167,7 +170,7 @@ export class Demuxer {
       this.handlePmt(section)
     } else if (pid === PID_SDT && (tableId === TABLE_SDT_ACTUAL || tableId === TABLE_SDT_OTHER)) {
       this.callbacks.onSdt?.(decodeSdt(section))
-    } else if ((pid === PID_EIT || pid === PID_EIT_OTHER) && isEitTableId(tableId)) {
+    } else if (EIT_PIDS.has(pid) && isEitTableId(tableId)) {
       this.callbacks.onEit?.(decodeEit(section))
     } else if (pid === PID_NIT && (tableId === TABLE_NIT_ACTUAL || tableId === TABLE_NIT_OTHER)) {
       this.callbacks.onNit?.(decodeNit(section))

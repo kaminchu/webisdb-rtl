@@ -137,6 +137,21 @@ describe('Demuxer', () => {
     expect(demuxer.selectedService).toBe(1)
   })
 
+  it('dispatches EIT from every terrestrial EIT PID', () => {
+    const { demuxer, captured } = createDemuxer()
+    const eit = buildEit({
+      tableId: 0x4e,
+      serviceId: 1,
+      transportStreamId: 0x1234,
+      originalNetworkId: 0x7fff,
+      events: [],
+    })
+    for (const pid of [0x0012, 0x0026, 0x0027]) {
+      demuxer.push(sectionToPackets(eit, pid))
+    }
+    expect(captured.eit).toHaveLength(3)
+  })
+
   it('assembles PES and extracts PTS/DTS', () => {
     const { demuxer, captured } = createDemuxer()
     const { pat, pmt } = buildSingleProgram()

@@ -64,6 +64,23 @@ function decodeEuc(bytes: number[]): string {
   return result
 }
 
+/** ARIB STD-B24 single-byte Hiragana/Katakana sets share this punctuation tail. */
+const KATAKANA_PUNCTUATION = [0x30fd, 0x30fe, 0x30fc, 0x3002, 0x300c, 0x300d, 0x3001, 0x30fb]
+const HIRAGANA_PUNCTUATION = [0x309d, 0x309e]
+
+function decodeKatakana(code: number): string {
+  if (code <= 0x76) return String.fromCodePoint(0x3080 + code)
+  const punctuation = KATAKANA_PUNCTUATION[code - 0x77]
+  return punctuation === undefined ? REPLACEMENT : String.fromCodePoint(punctuation)
+}
+
+function decodeHiragana(code: number): string {
+  if (code <= 0x73) return String.fromCodePoint(0x3020 + code)
+  if (code === 0x77 || code === 0x78) return String.fromCodePoint(HIRAGANA_PUNCTUATION[code - 0x77])
+  const punctuation = KATAKANA_PUNCTUATION[code - 0x77]
+  return punctuation === undefined ? REPLACEMENT : String.fromCodePoint(punctuation)
+}
+
 export interface AribCharToken {
   type: 'char'
   text: string
@@ -253,7 +270,7 @@ export function tokenizeAribText(bytes: Uint8Array, options: AribDecodeOptions =
         tokens.push({ type: 'drcs', map, code: (code << 8) | next })
         i++
       } else tokens.push({ type: 'drcs', map, code })
-    } else if (set === 0x42 || set === 0x39 || set === 0x3a) {
+    } else if (set === 0x42 || set === 0x39 || set === 0x3a || set === 0x3b) {
       const next = bytes[i] & 0x7f
       if (next >= 0x21 && next <= 0x7e) {
         tokens.push({ type: 'char', text: decodeEuc([code | 0x80, next | 0x80]) })
@@ -262,9 +279,9 @@ export function tokenizeAribText(bytes: Uint8Array, options: AribDecodeOptions =
     } else if (set === 0x4a || set === 0x36) {
       tokens.push({ type: 'char', text: String.fromCharCode(code) })
     } else if (set === 0x30 || set === 0x37) {
-      tokens.push({ type: 'char', text: decodeEuc([0xa4, code | 0x80]) })
+      tokens.push({ type: 'char', text: decodeHiragana(code) })
     } else if (set === 0x31 || set === 0x38) {
-      tokens.push({ type: 'char', text: decodeEuc([0xa5, code | 0x80]) })
+      tokens.push({ type: 'char', text: decodeKatakana(code) })
     } else {
       tokens.push({ type: 'char', text: REPLACEMENT })
     }
