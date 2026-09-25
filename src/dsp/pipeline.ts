@@ -125,47 +125,75 @@ function tmccCarriersFor(mode: TransmissionMode): readonly number[] {
   return v
 }
 
-/** CFO-invariant BPSK concentration of the TMCC carriers at integer shift `m`. */
-function bpskMetric(
-  planes: readonly ComplexBins[],
-  half: number,
-  tmcc: readonly number[],
-  m: number,
-): number {
-  let sr = 0
-  let si = 0
-  let count = 0
-  const n = planes[0].re.length
-  for (let s = 1; s < planes.length; s++) {
-    for (const k of tmcc) {
-      const c = half + m + k
-      if (c < 0 || c >= n) continue
-      const dr = planes[s].re[c] * planes[s - 1].re[c] + planes[s].im[c] * planes[s - 1].im[c]
-      const di = planes[s].im[c] * planes[s - 1].re[c] - planes[s].re[c] * planes[s - 1].im[c]
-      const mag = Math.sqrt(dr * dr + di * di)
-      if (mag < 1e-9) continue
-      const cosd = dr / mag
-      const sind = di / mag
-      sr += cosd * cosd - sind * sind
-      si += 2 * cosd * sind
-      count++
-    }
-  }
-  return count > 0 ? Math.hypot(sr, si) / count : 0
-}
-
+/**
+ * Integer-CFO search over the TMCC carriers.
+ *
+ * The BPSK concentration for shift `m` sums the doubled phase of
+ * `z_s[c] * conj(z_{s-1}[c])` over all symbols `s` and TMCC carriers `k`, where
+ * `c = half + m + k`. The term depends only on the FFT bin `c`, not on `m`, so
+ * the per-bin doubled phasors are accumulated once and each shift then reduces
+ * to a short sum over the (few) TMCC carriers. This turns the naive
+ * `O(shifts * symbols * carriers)` search into `O(bins * symbols)`.
+ */
 function estimateIntegerCfo(
   planes: readonly ComplexBins[],
   mode: TransmissionMode,
 ): { m: number; score: number }[] {
   const half = MODE_PARAMS[mode].oneSegFftSize >> 1
   const tmcc = tmccCarriersFor(mode)
+  const n = planes.length > 0 ? planes[0].re.length : 0
+  if (n === 0 || tmcc.length === 0) return []
+
+  const lo = Math.max(0, half - TMCC_CFO_RANGE + tmcc[0])
+  const hi = Math.min(n, half + TMCC_CFO_RANGE + tmcc[tmcc.length - 1] + 1)
+  const accRe = new Float64Array(n)
+  const accIm = new Float64Array(n)
+  const counts = new Float64Array(n)
+  for (let s = 1; s < planes.length; s++) {
+    const curRe = planes[s].re
+    const curIm = planes[s].im
+    const prevRe = planes[s - 1].re
+    const prevIm = planes[s - 1].im
+    for (let c = lo; c < hi; c++) {
+      const dr = curRe[c] * prevRe[c] + curIm[c] * prevIm[c]
+      const di = curIm[c] * prevRe[c] - curRe[c] * prevIm[c]
+      const mag = Math.sqrt(dr * dr + di * di)
+      if (mag < 1e-9) continue
+      const cosd = dr / mag
+      const sind = di / mag
+      accRe[c] += cosd * cosd - sind * sind
+      accIm[c] += 2 * cosd * sind
+      counts[c] += 1
+    }
+  }
+
   const scored: { m: number; score: number }[] = []
   for (let m = -TMCC_CFO_RANGE; m <= TMCC_CFO_RANGE; m++) {
-    scored.push({ m, score: bpskMetric(planes, half, tmcc, m) })
+    let sr = 0
+    let si = 0
+    let count = 0
+    for (const k of tmcc) {
+      const c = half + m + k
+      if (c < 0 || c >= n) continue
+      sr += accRe[c]
+      si += accIm[c]
+      count += counts[c]
+    }
+    scored.push({ m, score: count > 0 ? Math.hypot(sr, si) / count : 0 })
   }
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, 4)
+}
+
+const scatteredPilotCache = new Map<string, readonly number[]>()
+function scatteredPilotsFor(mode: TransmissionMode, phase: number): readonly number[] {
+  const key = `${mode}:${phase}`
+  let v = scatteredPilotCache.get(key)
+  if (!v) {
+    v = scatteredPilotIndices(phase, MODE_PARAMS[mode].carriersPerSegment)
+    scatteredPilotCache.set(key, v)
+  }
+  return v
 }
 
 /**
@@ -181,22 +209,26 @@ function estimateSpPhase(
   const n = planes[0].re.length
   const half = MODE_PARAMS[mode].oneSegFftSize >> 1
   const cps = MODE_PARAMS[mode].carriersPerSegment
+  const pilots = [0, 1, 2, 3].map((phase) => scatteredPilotsFor(mode, phase))
+  const refInv = new Float64Array(cps)
+  for (let c = 0; c < cps; c++) refInv[c] = 1 / pilotReferenceAt(c, mode)
   let best = 0
   let bestScore = Number.POSITIVE_INFINITY
   for (let offset = 0; offset < 4; offset++) {
     let variation = 0
     let power = 0
     for (let s = 0; s < planes.length; s++) {
-      const sp = scatteredPilotIndices((s + offset) % 4, cps)
+      const re = planes[s].re
+      const im = planes[s].im
       let prevRe = 0
       let prevIm = 0
       let havePrev = false
-      for (const c of sp) {
+      for (const c of pilots[(s + offset) & 3]) {
         const bin = half + m + c
         if (bin < 0 || bin >= n) continue
-        const p = pilotReferenceAt(c, mode)
-        const hr = planes[s].re[bin] / p
-        const hi = planes[s].im[bin] / p
+        const inv = refInv[c]
+        const hr = re[bin] * inv
+        const hi = im[bin] * inv
         if (havePrev) {
           const dr = hr - prevRe
           const di = hi - prevIm
@@ -522,11 +554,11 @@ export class OneSegPipeline {
       }
       const re = plane.re
       const im = plane.im
-      for (let i = 0; i < n; i++) {
-        const j = (i + half) % n
-        re[j] = fRe[i]
-        im[j] = fIm[i]
-      }
+      // fftshift by `half` as two block copies instead of an elementwise rotate.
+      re.set(fRe.subarray(0, half), half)
+      re.set(fRe.subarray(half), 0)
+      im.set(fIm.subarray(0, half), half)
+      im.set(fIm.subarray(half), 0)
       planes.push({ re, im })
     }
     return planes
