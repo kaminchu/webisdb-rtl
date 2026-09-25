@@ -122,6 +122,31 @@ describe('OneSegPlayer jitter buffer', () => {
     expect(player.stats.bufferedPes).toBe(0)
     player.close()
   })
+
+  it('does not mistake interleaved audio and video timestamps for a discontinuity', () => {
+    const player = new OneSegPlayer(document.createElement('canvas'), { clock: () => 0 })
+    const recover = vi.spyOn(player, 'recover')
+    player.pushPes(packet('video', 900_000))
+    player.pushPes(packet('audio', 630_000))
+    player.pushPes(packet('video', 906_000))
+    player.pushPes(packet('audio', 636_000))
+    expect(recover).not.toHaveBeenCalled()
+    player.close()
+  })
+
+  it('forgets the previous channel timeline on reset', () => {
+    const player = new OneSegPlayer(document.createElement('canvas'), {
+      bufferSec: 3,
+      clock: () => 0,
+    })
+    player.pushPes(packet('video', 90_000))
+    player.reset()
+    const recover = vi.spyOn(player, 'recover')
+    player.pushPes(packet('video', 900_000))
+    expect(recover).not.toHaveBeenCalled()
+    expect(player.stats.bufferedPes).toBe(1)
+    player.close()
+  })
 })
 
 describe('OneSegPlayer without WebCodecs', () => {
@@ -230,6 +255,49 @@ function setup(bufferSec = 0) {
 
 describe('OneSegPlayer frame presentation', () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it.each([900_000, 2 ** 33 - 9_000])(
+    'resumes rendering after the PTS moves backwards from %i',
+    (previousPts) => {
+      const { player, draw, frames, emit, tick } = setup()
+      player.pushPes(packet('video', previousPts))
+      player.pushPes(packet('video', 90_000))
+      emit(frames[0])
+      tick(0.001)
+      expect(draw).toHaveBeenCalledTimes(1)
+      expect(player.stats.dropped).toBe(0)
+      player.close()
+    },
+  )
+
+  it('recovers a stalled startup even before the first frame is drawn', () => {
+    const { player, draw, frames, emit, tick } = setup()
+    const recover = vi.spyOn(player, 'recover')
+    tick(3)
+    player.pushPes(packet('video', 96_000))
+    expect(recover).toHaveBeenCalledTimes(1)
+    emit({ ...frames[0], timestamp: 1_066_667 } as VideoFrame)
+    tick(3.001)
+    expect(draw).toHaveBeenCalledTimes(1)
+    player.close()
+  })
+
+  it('detects incoming video stalled in the jitter queue without resetting during buffering', () => {
+    const { player, tick } = setup(3)
+    const recover = vi.spyOn(player, 'recover')
+    tick(3)
+    player.pushPes(packet('video', 180_000))
+    expect(recover).not.toHaveBeenCalled()
+    // A frozen master clock leaves incoming packets queued rather than routed.
+    const sync = (player as unknown as { avSync: { now(): number } }).avSync
+    vi.spyOn(sync, 'now').mockReturnValue(0)
+    player.pushPes(packet('video', 270_000))
+    expect(player.stats.bufferedPes).toBeGreaterThan(0)
+    tick(6)
+    player.pushPes(packet('video', 360_000))
+    expect(recover).toHaveBeenCalledTimes(1)
+    player.close()
+  })
 
   it('draws a caption identified by the broadcast PMT descriptor over video', () => {
     const { player, fillText, frames, emit, tick } = setup()

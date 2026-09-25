@@ -44,7 +44,7 @@ const DECODE_AHEAD_SEC = 1
 const CAPTURE_FPS = 30
 // Detect a frozen video pipeline: packets keep arriving but no frame is drawn.
 const STALL_CHECK_SEC = 2.5
-// A forward PTS step larger than this is a dropout/re-acquisition discontinuity.
+// Large PTS steps in either direction include dropouts and the 33-bit PTS wrap.
 const MAX_PTS_JUMP_SEC = 2
 
 interface BufferedPes {
@@ -96,11 +96,11 @@ export class OneSegPlayer {
   private lastPts: number | null = null
   private readonly adts = new AdtsAssembler()
   private pendingVideo: PesPacket | null = null
-  private lastIncomingPtsSec: number | null = null
-  private stallCheckAt = 0
+  private lastIncomingPtsSec: { video?: number; audio?: number } = {}
+  private incomingVideoSamples = 0
+  private stallCheckAt: number | null = null
   private stallFrames = 0
   private stallVideoSamples = 0
-  private hadVideoFrame = false
   private counters = {
     videoSamples: 0,
     audioSamples: 0,
@@ -166,20 +166,16 @@ export class OneSegPlayer {
   }
 
   pushPes(packet: PesPacket): void {
-    if (
-      packet.pts !== undefined &&
-      (packet.kind === 'video' || packet.kind === 'audio') &&
-      this.lastIncomingPtsSec !== null &&
-      packet.pts / 90_000 - this.lastIncomingPtsSec > MAX_PTS_JUMP_SEC
-    ) {
-      // A dropout/re-acquisition jumped the timeline. Skip the lost interval and
-      // present the new timeline immediately instead of waiting for the clock.
-      this.recover()
-      this.avSync.anchor(packet.pts, 0)
-    }
     if (packet.pts !== undefined && (packet.kind === 'video' || packet.kind === 'audio')) {
-      this.lastIncomingPtsSec = packet.pts / 90_000
+      const previous = this.lastIncomingPtsSec[packet.kind]
+      if (previous !== undefined && Math.abs(packet.pts / 90_000 - previous) > MAX_PTS_JUMP_SEC) {
+        this.recover()
+        this.avSync.anchor(packet.pts, 0)
+      }
+      this.lastIncomingPtsSec[packet.kind] = packet.pts / 90_000
     }
+    if (packet.kind === 'video') this.incomingVideoSamples++
+    this.checkStall()
     if (
       !this.avSync.anchored &&
       packet.pts !== undefined &&
@@ -198,7 +194,6 @@ export class OneSegPlayer {
     if (this.queueTimer !== null) clearTimeout(this.queueTimer)
     this.queueTimer = null
     this.drainQueue()
-    this.checkStall()
   }
 
   /**
@@ -208,19 +203,19 @@ export class OneSegPlayer {
    */
   private checkStall(): void {
     const now = this.now()
-    if (this.stallCheckAt === 0) {
-      this.stallCheckAt = now
+    if (this.stallCheckAt === null) {
+      this.stallCheckAt = now + this.bufferSec
       this.stallFrames = this.counters.videoFramesDecoded
-      this.stallVideoSamples = this.counters.videoSamples
+      this.stallVideoSamples = this.incomingVideoSamples
       return
     }
     if (now - this.stallCheckAt < STALL_CHECK_SEC) return
     const progressed = this.counters.videoFramesDecoded !== this.stallFrames
-    const receiving = this.counters.videoSamples !== this.stallVideoSamples
+    const receiving = this.incomingVideoSamples !== this.stallVideoSamples
     this.stallCheckAt = now
     this.stallFrames = this.counters.videoFramesDecoded
-    this.stallVideoSamples = this.counters.videoSamples
-    if (!progressed && receiving && this.hadVideoFrame) this.recover()
+    this.stallVideoSamples = this.incomingVideoSamples
+    if (!progressed && receiving) this.recover()
   }
 
   /** Re-key decoders and reset the sync clock while keeping codec config. */
@@ -228,7 +223,8 @@ export class OneSegPlayer {
     this.clearQueue()
     this.adts.reset()
     this.pendingVideo = null
-    this.lastIncomingPtsSec = null
+    this.lastIncomingPtsSec = {}
+    this.stallCheckAt = null
     this.avSync.reset()
     this.videoDecoder.reset()
     this.audioDecoder.reset()
@@ -340,6 +336,8 @@ export class OneSegPlayer {
 
   /** Flush decoders and the sync clock; used for LIVE recovery. */
   reset(): void {
+    this.lastIncomingPtsSec = {}
+    this.stallCheckAt = null
     this.clearQueue()
     this.adts.reset()
     this.pendingVideo = null
@@ -392,7 +390,6 @@ export class OneSegPlayer {
         }
       }
       this.counters.videoFramesDecoded++
-      this.hadVideoFrame = true
     } finally {
       frame.close()
     }
