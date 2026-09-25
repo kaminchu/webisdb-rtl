@@ -1,10 +1,10 @@
 /**
  * High-level one-seg receive chain: equalized data carriers -> MPEG-TS bytes.
  *
- * This mirrors the reference receiver's FEC chain exactly, per OFDM symbol:
- *   frequency deinterleave -> time deinterleave -> carrier demap ->
- *   bit deinterleave -> streaming depuncture/Viterbi -> byte deinterleave ->
- *   energy descramble -> Reed-Solomon -> TS packet assembly.
+ * The FEC chain (frequency/time deinterleave -> soft demap -> bit deinterleave
+ * -> streaming Viterbi -> byte deinterleave -> energy descramble ->
+ * Reed-Solomon -> TS assembly) runs inside the fused `oneseg` WASM kernel so a
+ * whole symbol batch stays in linear memory; see `wasm/dsp/src/oneseg.rs`.
  *
  * Time deinterleaving precedes demapping because DQPSK differential detection
  * needs the previous symbol of the same carrier after time deinterleaving.
@@ -13,16 +13,6 @@
  */
 
 import { bitsPerCarrier, type ComplexPlane } from './stages/carrierDemod'
-import { EnergyDescrambler, RS_CODEWORD_SIZE, SYNC_BYTE } from './stages/energyDispersal'
-import { TsGenerator } from './stages/tsGenerator'
-import { demodulatePlaneSoftWasm } from './wasm/demap'
-import {
-  WasmByteDeinterleaver,
-  WasmSoftBitDeinterleaver,
-  WasmTimeDeinterleaver,
-} from './wasm/deinterleave'
-import { WasmRsBackend } from './wasm/reedSolomon'
-import { WasmStreamingViterbi } from './wasm/viterbi'
 import {
   CarrierModulation,
   MODE_PARAMS,
@@ -31,11 +21,7 @@ import {
   type TransmissionMode,
 } from './isdbtParams'
 import type { TmccInfo } from '../models/tmcc'
-import type { RsBackend } from './backend'
-
-export interface OneSegDecoderOptions {
-  rs?: RsBackend
-}
+import { WasmOneSegDecoder } from './wasm/oneseg'
 
 const CODE_RATE_FRACTIONS: Record<string, readonly [number, number]> = {
   '1/2': [1, 2],
@@ -49,20 +35,10 @@ export class OneSegDecoder {
   readonly mode: TransmissionMode
   readonly modulation: CarrierModulation
 
-  private readonly timeDeinterleaver: WasmTimeDeinterleaver
-  private readonly bitDeinterleaver: WasmSoftBitDeinterleaver
-  private readonly byteDeinterleaver = new WasmByteDeinterleaver()
-  private readonly ts = new TsGenerator()
-  private readonly viterbi: WasmStreamingViterbi
-  private readonly rs: RsBackend
   private readonly carriersPerSymbol: number
-  private readonly frameBytes: number
-  private readonly mask: Uint8Array
-  private readonly packet = new Uint8Array(RS_CODEWORD_SIZE)
-  private byteIndex = 0
-  private previous: ComplexPlane | null = null
+  private readonly decoder: WasmOneSegDecoder
 
-  constructor(tmcc: TmccInfo, options: OneSegDecoderOptions = {}) {
+  constructor(tmcc: TmccInfo) {
     const layer = tmcc.layers.A
     if (tmcc.mode === null || tmcc.mode < 1 || tmcc.mode > 3) {
       throw new Error('one-seg decoder requires a decoded TMCC mode')
@@ -72,83 +48,51 @@ export class OneSegDecoder {
     this.modulation = layer.modulation as CarrierModulation
     const codeRate = codeRateName(layer.codeRate)
     this.carriersPerSymbol = MODE_PARAMS[this.mode].dataCarriersPerSegment
-    this.timeDeinterleaver = new WasmTimeDeinterleaver(
-      this.mode,
-      timeInterleaveLength(layer.timeInterleave, this.mode),
-    )
-    this.bitDeinterleaver = new WasmSoftBitDeinterleaver(this.modulation)
-    this.rs = options.rs ?? new WasmRsBackend()
     const [k, n] = CODE_RATE_FRACTIONS[codeRate]
-    this.frameBytes = (204 * this.carriersPerSymbol * bitsPerCarrier(this.modulation) * k) / n / 8
-    this.mask = buildMask(this.frameBytes)
-    this.viterbi = new WasmStreamingViterbi(codeRate)
+    const frameBytes = (204 * this.carriersPerSymbol * bitsPerCarrier(this.modulation) * k) / n / 8
+    this.decoder = new WasmOneSegDecoder(
+      this.mode,
+      this.modulation,
+      codeRate,
+      timeInterleaveLength(layer.timeInterleave, this.mode),
+      Math.round(frameBytes),
+    )
   }
 
-  get tsStats() {
-    return this.ts.stats
+  get tsStats(): { packets: number; syncErrors: number } {
+    return this.decoder.stats
   }
 
   reset(): void {
-    this.timeDeinterleaver.reset()
-    this.bitDeinterleaver.reset()
-    this.byteDeinterleaver.reset()
-    this.viterbi.reset()
-    this.ts.reset()
-    this.byteIndex = 0
-    this.previous = null
+    this.decoder.reset()
   }
 
   /** Release the WASM decoder state; the instance must not be used afterwards. */
   dispose(): void {
-    this.timeDeinterleaver.destroy()
-    this.bitDeinterleaver.destroy()
-    this.byteDeinterleaver.destroy()
-    this.viterbi.dispose()
+    this.decoder.destroy()
   }
 
   /** Decode a batch of equalized data-carrier planes into MPEG-TS bytes. */
   decode(symbols: readonly ComplexPlane[]): Uint8Array {
-    for (const plane of symbols) {
-      if (plane.re.length !== this.carriersPerSymbol) {
-        throw new Error(`expected ${this.carriersPerSymbol} carriers, got ${plane.re.length}`)
+    const dc = this.carriersPerSymbol
+    const re = new Float32Array(symbols.length * dc)
+    const im = new Float32Array(symbols.length * dc)
+    for (let i = 0; i < symbols.length; i++) {
+      const plane = symbols[i]
+      if (plane.re.length !== dc) {
+        throw new Error(`expected ${dc} carriers, got ${plane.re.length}`)
       }
-      const td = this.timeDeinterleaver.processFrequencyDeinterleaved(plane, this.mode)
-      if (this.previous === null && this.modulation === CarrierModulation.DQPSK) {
-        // Differential reference for the first symbol is the previous frame.
-        this.previous = td
-        continue
-      }
-      const soft = demodulatePlaneSoftWasm(this.modulation, td, this.previous)
-      this.previous = td
-      const deinterleavedBits = this.bitDeinterleaver.process(soft)
-      this.pushDecodedBytes(this.viterbi.feedSoftBlock(deinterleavedBits))
+      re.set(plane.re, i * dc)
+      im.set(plane.im, i * dc)
     }
-    return this.ts.takeBytes()
+    return this.decoder.decode(re, im, symbols.length)
   }
 
-  private pushDecodedBytes(decoded: Uint8Array): void {
-    if (decoded.length === 0) return
-    const bytes = this.byteDeinterleaver.process(decoded)
-    for (let i = 0; i < bytes.length; i++) {
-      const v = bytes[i]
-      const maskByte = this.mask[this.byteIndex % this.mask.length]
-      const offset = this.byteIndex % RS_CODEWORD_SIZE
-      if (offset === RS_CODEWORD_SIZE - 1) this.packet[0] = v
-      else this.packet[offset + 1] = v ^ maskByte
-      this.byteIndex++
-      if (offset === RS_CODEWORD_SIZE - 1) {
-        const data = this.rs.decode(this.packet)
-        if (data !== null && data[0] === SYNC_BYTE) this.ts.pushBlock(data)
-      }
-    }
+  /**
+   * Decode a batch already laid out contiguously as `symbolCount` planes of
+   * `carriersPerSymbol` complex values each, avoiding the per-plane repacking.
+   */
+  decodeContiguous(re: Float32Array, im: Float32Array, symbolCount: number): Uint8Array {
+    return this.decoder.decode(re, im, symbolCount)
   }
-}
-
-/** Precompute the per-frame energy dispersal mask bytes (PRBS reset each frame). */
-function buildMask(frameBytes: number): Uint8Array {
-  const length = Math.round(frameBytes)
-  const mask = new Uint8Array(length)
-  const prbs = new EnergyDescrambler()
-  for (let i = 0; i < length; i++) mask[i] = prbs.nextMaskByte()
-  return mask
 }

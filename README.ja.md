@@ -167,10 +167,11 @@ npm run knip         # 未使用コードの検出
 npm run ci           # lint + format:check + typecheck + test + knip
 ```
 
-DSP のホットパスは `wasm/<name>/` の Rust クレートを WebAssembly にコンパイルしたものです。
-コンパイル済みの `.wasm` は base64 として `src/dsp/wasm/<name>.bytes.ts` にコミットされて
-いるため、`build` と `test` に Rust ツールチェーンは不要です。カーネルを再ビルドするには
-次を実行します。
+DSP のホットパスは単一の `wasm/dsp/` クレートの Rust カーネルを WebAssembly にコンパイル
+したものです。コンパイル済みの `.wasm` は base64 として `src/dsp/wasm/dsp.bytes.ts` に
+コミットされ、`src/dsp/wasm/dsp.ts` で一度だけロードされるため、全カーネルが 1 つの
+インスタンスと線形メモリを共有し、`build` と `test` に Rust ツールチェーンは不要です。
+カーネルを再ビルドするには次を実行します。
 
 ```bash
 rustup target add wasm32-unknown-unknown   # 初回のみ

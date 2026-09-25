@@ -4,25 +4,7 @@
 //! scaling. Butterflies and twiddle updates are computed in f64 and stored back
 //! as f32, matching the JavaScript number semantics of the reference.
 
-use core::alloc::Layout;
 use core::f64::consts::PI;
-use std::alloc::{alloc, dealloc};
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
-}
 
 fn transform(re: &mut [f32], im: &mut [f32], sign: f64) {
     let n = re.len();

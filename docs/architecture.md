@@ -122,17 +122,18 @@ Reed–Solomon RS(204,188) → TS パケット組み立て。
 
 ## WebAssembly カーネル
 
-負荷の高い DSP 段は `wasm/<name>/` の Rust クレートで実装し、`wasm32-unknown-unknown` に
-コンパイルします。コンパイル済みの `.wasm` は base64 として
-`src/dsp/wasm/<name>.bytes.ts` にコミットされるため、通常の `build` と `test` に Rust
-ツールチェーンは不要です。
+負荷の高い DSP 段は単一の `wasm/dsp/` クレート内の Rust モジュールとして実装し、
+`wasm32-unknown-unknown` にコンパイルします。コンパイル済みの `.wasm` は base64 として
+`src/dsp/wasm/dsp.bytes.ts` にコミットし、`src/dsp/wasm/dsp.ts` で一度だけインスタンス化
+するため、全カーネルが 1 つの線形メモリとアロケータを共有します。通常の `build` と
+`test` に Rust ツールチェーンは不要です。
 
 ```bash
 rustup target add wasm32-unknown-unknown   # 初回のみ
-npm run build:wasm                          # すべて再ビルド -> src/dsp/wasm/*.bytes.ts
+npm run build:wasm                          # 再ビルド -> src/dsp/wasm/dsp.bytes.ts
 ```
 
-| カーネル       | 役割                                            |
+| モジュール     | 役割                                            |
 | -------------- | ----------------------------------------------- |
 | `fft`          | forward FFT                                     |
 | `ofdm`         | GI 相関同期                                     |
@@ -141,6 +142,11 @@ npm run build:wasm                          # すべて再ビルド -> src/dsp/w
 | `deinterleave` | 周波数/時間/ビット/バイトの各デインターリーブ   |
 | `viterbi`      | ストリーミング Viterbi 復号（デパンクチャ含む） |
 | `reed_solomon` | RS(204,188) 誤り訂正                            |
+| `oneseg`       | 上記 FEC 段を融合した one-seg デコーダ          |
+
+`oneseg` は等化後のデータキャリアをまとめて受け取り、時間デインターリーブから TS 組み立て
+までを WASM 内で完結させて MPEG-TS を返します。段ごとのホスト往復と中間コピーを削減する
+ため、`OneSegDecoder` はこの融合カーネルを呼びます。
 
 TypeScript の参照実装は `src/dsp/stages/` に残してあり、対応する
 `src/dsp/wasm/*.test.ts` で WASM ラッパーの出力と比較します。TS/WASM の差し替え境界は
@@ -197,7 +203,7 @@ src/
 ├─ workers/      receiver.worker.ts、ts.worker.ts、protocol.ts
 ├─ models/       データモデルと DTO
 └─ styles/       デザイントークンとグローバル CSS
-wasm/<name>/     Rust DSP カーネル (Cargo 付き)
+wasm/dsp/        Rust DSP カーネル (単一 Cargo クレート、融合 oneseg 含む)
 public/          manifest、アイコン、Service Worker
 scripts/         build-wasm.mjs、fetch-channel-data.ts
 ```

@@ -7,28 +7,10 @@
 //! the JavaScript number semantics of the reference while the sample buffer
 //! stays f32.
 
-use core::alloc::Layout;
 use core::f64::consts::PI;
-use std::alloc::{alloc, dealloc};
 
 const RHO: f64 = 0.5;
 const TIMING_SEARCH: i64 = 8;
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
-}
 
 struct Peak {
     index: i64,

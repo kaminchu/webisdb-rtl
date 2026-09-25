@@ -1,12 +1,12 @@
 /**
  * WebAssembly FFT backend (WASM implementation of `FftBackend`).
  *
- * Drop-in replacement for `TsFftBackend`; see `wasm/fft/src/lib.rs`.
+ * Drop-in replacement for `TsFftBackend`; see `wasm/dsp/src/fft.rs`.
  */
 
 import type { FftBackend } from '../backend'
-import { wasmFree, wasmAlloc, WasmHeap, instantiateWasm, type WasmModule } from './loadWasm'
-import { wasmBase64 } from './fft.bytes'
+import { wasmFree, wasmAlloc } from './loadWasm'
+import { wasm, heap } from './dsp'
 
 const MAX_FFT = 8192
 
@@ -14,15 +14,11 @@ type Transform = (re: number, im: number, n: number) => void
 
 export class WasmFftBackend implements FftBackend {
   readonly name = 'wasm-fft'
-  private readonly wasm: WasmModule
-  private readonly heap: WasmHeap
   private pRe = 0
   private pIm = 0
   private cap = 0
 
   constructor() {
-    this.wasm = instantiateWasm(wasmBase64)
-    this.heap = new WasmHeap(this.wasm.memory)
     this.ensure(MAX_FFT)
   }
 
@@ -55,28 +51,28 @@ export class WasmFftBackend implements FftBackend {
       return
     }
     this.ensure(length)
-    this.heap.f32(this.pRe, length).set(srcRe.subarray(srcOffset, srcOffset + length))
-    this.heap.f32(this.pIm, length).set(srcIm.subarray(srcOffset, srcOffset + length))
-    ;(this.wasm.exports.fft_forward as Transform)(this.pRe, this.pIm, length)
-    dstRe.set(this.heap.f32(this.pRe, length))
-    dstIm.set(this.heap.f32(this.pIm, length))
+    heap.f32(this.pRe, length).set(srcRe.subarray(srcOffset, srcOffset + length))
+    heap.f32(this.pIm, length).set(srcIm.subarray(srcOffset, srcOffset + length))
+    ;(wasm.exports.fft_forward as Transform)(this.pRe, this.pIm, length)
+    dstRe.set(heap.f32(this.pRe, length))
+    dstIm.set(heap.f32(this.pIm, length))
   }
 
   private ensure(n: number): void {
     if (n <= this.cap) return
     if (this.cap > 0) {
-      wasmFree(this.wasm, this.pRe, this.cap * 4)
-      wasmFree(this.wasm, this.pIm, this.cap * 4)
+      wasmFree(wasm, this.pRe, this.cap * 4)
+      wasmFree(wasm, this.pIm, this.cap * 4)
     }
-    this.pRe = wasmAlloc(this.wasm, n * 4)
-    this.pIm = wasmAlloc(this.wasm, n * 4)
+    this.pRe = wasmAlloc(wasm, n * 4)
+    this.pIm = wasmAlloc(wasm, n * 4)
     this.cap = n
   }
 
   dispose(): void {
     if (this.cap === 0) return
-    wasmFree(this.wasm, this.pRe, this.cap * 4)
-    wasmFree(this.wasm, this.pIm, this.cap * 4)
+    wasmFree(wasm, this.pRe, this.cap * 4)
+    wasmFree(wasm, this.pIm, this.cap * 4)
     this.cap = 0
   }
 
@@ -87,10 +83,10 @@ export class WasmFftBackend implements FftBackend {
       return
     }
     this.ensure(n)
-    this.heap.f32(this.pRe, n).set(re)
-    this.heap.f32(this.pIm, n).set(im)
-    ;(this.wasm.exports[fn] as Transform)(this.pRe, this.pIm, n)
-    re.set(this.heap.f32(this.pRe, n))
-    im.set(this.heap.f32(this.pIm, n))
+    heap.f32(this.pRe, n).set(re)
+    heap.f32(this.pIm, n).set(im)
+    ;(wasm.exports[fn] as Transform)(this.pRe, this.pIm, n)
+    re.set(heap.f32(this.pRe, n))
+    im.set(heap.f32(this.pIm, n))
   }
 }

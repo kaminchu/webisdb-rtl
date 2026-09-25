@@ -9,11 +9,8 @@ import type { CarrierModulation, TransmissionMode } from '../isdbtParams'
 import { MODE_PARAMS } from '../isdbtParams'
 import type { ComplexPlane } from '../stages/carrierDemod'
 import { bitDeinterleaveDelays, frequencyPermutation } from '../stages/deinterleave'
-import { instantiateWasm, wasmAlloc, wasmFree, WasmHeap, type WasmModule } from './loadWasm'
-import { wasmBase64 } from './deinterleave.bytes'
-
-const wasm: WasmModule = instantiateWasm(wasmBase64)
-const heap = new WasmHeap(wasm.memory)
+import { wasmAlloc, wasmFree } from './loadWasm'
+import { wasm, heap } from './dsp'
 
 type FrequencyFn = (
   perm: number,

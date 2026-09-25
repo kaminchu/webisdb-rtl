@@ -5,8 +5,8 @@
  */
 
 import type { RsBackend } from '../backend'
-import { WasmHeap, instantiateWasm, wasmAlloc, type WasmModule } from './loadWasm'
-import { wasmBase64 } from './reed_solomon.bytes'
+import { wasmAlloc, WasmHeap, type WasmModule } from './loadWasm'
+import { wasm, heap } from './dsp'
 
 const RS_BLOCK_SIZE = 204
 const RS_DATA_SIZE = 188
@@ -21,8 +21,8 @@ export class WasmRsBackend implements RsBackend {
   private readonly pOut: number
 
   constructor() {
-    this.wasm = instantiateWasm(wasmBase64)
-    this.heap = new WasmHeap(this.wasm.memory)
+    this.wasm = wasm
+    this.heap = heap
     this.pIn = wasmAlloc(this.wasm, RS_BLOCK_SIZE)
     this.pOut = wasmAlloc(this.wasm, RS_DATA_SIZE)
   }

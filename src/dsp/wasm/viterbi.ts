@@ -6,8 +6,8 @@
  */
 
 import type { ViterbiBackend, ViterbiRate } from '../backend'
-import { instantiateWasm, wasmAlloc, wasmFree, WasmHeap, type WasmModule } from './loadWasm'
-import { wasmBase64 } from './viterbi.bytes'
+import { wasmAlloc, wasmFree, WasmHeap, type WasmModule } from './loadWasm'
+import { wasm, heap } from './dsp'
 
 const RATE_INDEX: Record<ViterbiRate, number> = {
   '1/2': 0,
@@ -42,8 +42,8 @@ export class WasmViterbiBackend implements ViterbiBackend {
   private readonly heap: WasmHeap
 
   constructor() {
-    this.wasm = instantiateWasm(wasmBase64)
-    this.heap = new WasmHeap(this.wasm.memory)
+    this.wasm = wasm
+    this.heap = heap
   }
 
   decode(input: Uint8Array, rate: ViterbiRate, terminate: boolean): Uint8Array {
@@ -94,8 +94,8 @@ export class WasmStreamingViterbi {
   private pOut = 0
 
   constructor(rate: ViterbiRate, onByte?: (byte: number) => void) {
-    this.wasm = instantiateWasm(wasmBase64)
-    this.heap = new WasmHeap(this.wasm.memory)
+    this.wasm = wasm
+    this.heap = heap
     this.onByte = onByte ?? null
     this.ptr = (this.wasm.exports.viterbi_stream_create as StreamCreateFn)(RATE_INDEX[rate])
   }

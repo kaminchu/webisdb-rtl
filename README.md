@@ -172,9 +172,10 @@ npm run knip         # detect unused code
 npm run ci           # lint + format:check + typecheck + test + knip
 ```
 
-The DSP hot paths are Rust crates under `wasm/<name>/` compiled to WebAssembly. Each compiled
-`.wasm` is embedded as base64 in a committed `src/dsp/wasm/<name>.bytes.ts`, so `build` and
-`test` work without a Rust toolchain. To rebuild the kernels:
+The DSP hot paths are Rust kernels in the single `wasm/dsp/` crate compiled to WebAssembly. The
+compiled `.wasm` is embedded as base64 in a committed `src/dsp/wasm/dsp.bytes.ts` and loaded once
+via `src/dsp/wasm/dsp.ts`, so all kernels share one instance and linear memory and `build`/`test`
+work without a Rust toolchain. To rebuild the kernels:
 
 ```bash
 rustup target add wasm32-unknown-unknown   # once

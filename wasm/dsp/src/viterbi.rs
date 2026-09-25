@@ -4,9 +4,6 @@
 //! bit-reversed taps 0x4f/0x6d, depuncturing into erasures, hard/soft batch
 //! decode, and the streaming correlation decoder with a fixed traceback.
 
-use core::alloc::Layout;
-use std::alloc::{alloc, dealloc};
-
 const G1: u32 = 0x4f;
 const G2: u32 = 0x6d;
 const NUM_STATES: usize = 64;
@@ -18,22 +15,6 @@ const PUNCTURE_2_3: [u8; 4] = [1, 1, 0, 1];
 const PUNCTURE_3_4: [u8; 6] = [1, 1, 0, 1, 1, 0];
 const PUNCTURE_5_6: [u8; 10] = [1, 1, 0, 1, 1, 0, 0, 1, 1, 0];
 const PUNCTURE_7_8: [u8; 14] = [1, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0];
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
-}
 
 fn puncture_pattern(rate: u32) -> &'static [u8] {
     match rate {

@@ -14,11 +14,8 @@ import {
   pilotReference,
   type TransmissionMode,
 } from '../isdbtParams'
-import { instantiateWasm, wasmAlloc, wasmFree, WasmHeap } from './loadWasm'
-import { wasmBase64 } from './demap.bytes'
-
-const wasm = instantiateWasm(wasmBase64)
-const heap = new WasmHeap(wasm.memory)
+import { wasmAlloc, wasmFree } from './loadWasm'
+import { wasm, heap } from './dsp'
 
 type EstimateChannelFn = (
   binsRe: number,

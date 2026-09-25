@@ -8,25 +8,7 @@
 //! per carrier (`pilotReferenceAt(k, mode)`), so this kernel only needs the
 //! carriers-per-segment geometry.
 
-use core::alloc::Layout;
-use std::alloc::{alloc, dealloc};
 use std::vec::Vec;
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
-}
 
 const DQPSK_PHASE_STEP: f64 = core::f64::consts::PI / 2.0;
 const QAM16_NORM: f64 = 3.162_277_660_168_379_5; // sqrt(10)

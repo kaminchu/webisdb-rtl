@@ -20,11 +20,13 @@ npm run ci           # lint + format:check + typecheck + test + knip
 
 Always run `npm run format` before finishing a task, then `npm run typecheck` and `npm test`.
 
-DSP hot paths run as WebAssembly kernels (`wasm/<name>/` Rust crates). Build with
+DSP hot paths run as WebAssembly kernels in the single `wasm/dsp/` Rust crate. Build with
 `rustup target add wasm32-unknown-unknown` once, then `npm run build:wasm`. The compiled
-`.wasm` is embedded as base64 in the committed `src/dsp/wasm/<name>.bytes.ts`, so `build`
-and `test` do not need Rust. TypeScript reference implementations remain under
-`src/dsp/stages/` and are compared against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
+`.wasm` is embedded as base64 in the committed `src/dsp/wasm/dsp.bytes.ts` and loaded once via
+`src/dsp/wasm/dsp.ts`, so every kernel shares one instance/linear memory and `build`/`test` do
+not need Rust. The fused one-seg FEC decoder in `wasm/dsp/src/oneseg.rs` keeps a whole symbol
+batch inside WASM and returns MPEG-TS directly. TypeScript reference implementations remain
+under `src/dsp/stages/` and are compared against the WASM wrappers in `src/dsp/wasm/*.test.ts`.
 
 ## Code conventions
 

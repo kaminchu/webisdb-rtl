@@ -4,25 +4,7 @@
 //! `NcoCorrector` in `src/dsp/stages/frequencyCorrection.ts`. State is kept in
 //! f64 exactly as the JavaScript reference; complex samples are stored as f32.
 
-use core::alloc::Layout;
 use core::f64::consts::PI;
-use std::alloc::{alloc, dealloc};
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
-}
 
 /// One-pole running-mean complex high-pass.
 pub struct DcRemoval {

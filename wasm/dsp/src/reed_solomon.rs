@@ -4,9 +4,6 @@
 //! polynomial 0x11d, shortened from RS(255,239) with 51 implicit zero symbols,
 //! t = 8. Returns 0 (uncorrectable) instead of a corrected block.
 
-use core::alloc::Layout;
-use std::alloc::{alloc, dealloc};
-
 const PRIMITIVE: u16 = 0x11d;
 const FIELD_SIZE: usize = 255;
 const PARITY_SYMBOLS: usize = 16;
@@ -59,22 +56,6 @@ fn gf_div(a: u8, b: u8) -> u8 {
 
 fn gf_inv(a: u8) -> u8 {
     TABLES.exp[FIELD_SIZE - TABLES.log[a as usize] as usize]
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_alloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe { alloc(Layout::from_size_align_unchecked(size, 8)) }
-}
-
-#[no_mangle]
-pub extern "C" fn dsp_free(ptr: *mut u8, size: usize) {
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-    unsafe { dealloc(ptr, Layout::from_size_align_unchecked(size, 8)) }
 }
 
 fn syndromes(full: &[u8]) -> [u8; PARITY_SYMBOLS] {

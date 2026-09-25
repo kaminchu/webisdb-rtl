@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "webisdb_ofdm"
+name = "webisdb_dsp"
 version = "0.1.0"

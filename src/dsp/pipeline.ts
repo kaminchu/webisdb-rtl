@@ -22,8 +22,6 @@ import {
 import type { IqChunk } from '../iq/IQSource'
 import type { ReceptionQuality } from '../models/reception'
 import type { TmccInfo } from '../models/tmcc'
-import { u8ToComplex } from './carrier'
-import type { ComplexPlane } from './stages/carrierDemod'
 import { pilotReferenceAt, type ComplexBins } from './stages/channelEstimation'
 import { TmccDecoder } from './stages/tmcc'
 import { OneSegDecoder } from './oneSegDecoder'
@@ -261,6 +259,8 @@ export class OneSegPipeline {
   private state: PipelineState = 'idle'
   private bufRe = new Float32Array(1 << 20)
   private bufIm = new Float32Array(1 << 20)
+  private inRe = new Float32Array(0)
+  private inIm = new Float32Array(0)
   private bufLen = 0
   private bufferStart = 0
   private derotatedUpTo = 0
@@ -325,16 +325,19 @@ export class OneSegPipeline {
   /** Feed one raw IQ chunk (U8/I8 interleaved, or F32 complex interleaved). */
   pushIq(chunk: IqChunk): void {
     const count = Math.floor(chunk.data.length / 2)
-    const re = new Float32Array(count)
-    const im = new Float32Array(count)
+    if (count > this.inRe.length) {
+      this.inRe = new Float32Array(count)
+      this.inIm = new Float32Array(count)
+    }
+    const re = this.inRe.subarray(0, count)
+    const im = this.inIm.subarray(0, count)
     const data = chunk.data
     if (chunk.format === 'u8') {
-      const norm = u8ToComplex(
-        data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>),
-      )
+      const u8 = data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>)
+      const scale = 1 / 127.5
       for (let i = 0; i < count; i++) {
-        re[i] = norm[2 * i]
-        im[i] = norm[2 * i + 1]
+        re[i] = (u8[2 * i] - 127.5) * scale
+        im[i] = (u8[2 * i + 1] - 127.5) * scale
       }
     } else if (chunk.format === 'i8') {
       for (let i = 0; i < count; i++) {
@@ -766,17 +769,9 @@ export class OneSegPipeline {
 
   private flushTs(): void {
     if (this.oneSeg === null || this.pendingCount === 0) return
-    const dc = this.dataCount
-    const planes: ComplexPlane[] = []
-    for (let i = 0; i < this.pendingCount; i++) {
-      const offset = i * dc
-      planes.push({
-        re: this.pendingRe.subarray(offset, offset + dc),
-        im: this.pendingIm.subarray(offset, offset + dc),
-      })
-    }
+    const count = this.pendingCount
     this.pendingCount = 0
-    const out = this.oneSeg.decode(planes)
+    const out = this.oneSeg.decodeContiguous(this.pendingRe, this.pendingIm, count)
     if (out.length > 0) {
       this.tsBytes += out.length
       this.callbacks.onTs?.(out)
