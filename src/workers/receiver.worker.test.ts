@@ -9,7 +9,7 @@ describe('receiver worker live input', () => {
     onmessage: null as ((event: { data: ReceiverCommand }) => void) | null,
   }
   const send = (data: ReceiverCommand) => context.onmessage!({ data })
-  const init = (sampleRate: number, spectrumEnabled = true) =>
+  const init = (sampleRate: number, spectrumEnabled = true, webgpu = false) =>
     send({
       type: 'init',
       options: {
@@ -19,6 +19,7 @@ describe('receiver worker live input', () => {
         gainDb: 19.7,
         ppm: 0,
         spectrumEnabled,
+        webgpu,
       },
     })
   const input = (sampleRate: number) =>
@@ -89,6 +90,16 @@ describe('receiver worker live input', () => {
     })
     send({ type: 'start' })
     await vi.waitFor(() => expect(flush).toHaveBeenCalledTimes(1))
+  })
+
+  it('falls back to the WASM front end when WebGPU is unavailable', async () => {
+    vi.stubGlobal('navigator', {})
+    init(1_200_000, false, true)
+    await vi.waitFor(() => {
+      now = 600
+      input(1_200_000)
+      expect(events.some((event) => event.type === 'stats')).toBe(true)
+    })
   })
 
   it('recreates the resampler when reconnecting with a different sample rate', () => {

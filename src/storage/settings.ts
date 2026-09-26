@@ -19,6 +19,8 @@ export interface AppSettings {
   frontend: RtlFrontendMode
   /** Playback jitter buffer depth in seconds; media is presented this far behind live. */
   bufferSeconds: number
+  /** Run the OFDM front end on WebGPU when the browser exposes it. */
+  webgpu: boolean
   ui: { theme?: 'dark' | 'light'; subtitles: boolean; audioChannel: AudioChannelMode }
   debug: { showOverlay: boolean }
 }
@@ -42,6 +44,7 @@ export function defaultSettings(): AppSettings {
     sampleRate: null,
     frontend: RtlFrontendMode.Generic,
     bufferSeconds: DEFAULT_BUFFER_SECONDS,
+    webgpu: false,
     ui: { subtitles: false, audioChannel: AudioChannelMode.Stereo },
     debug: { showOverlay: false },
   }
@@ -122,6 +125,7 @@ function mergeSettings(base: AppSettings, patch: SettingsPatch): AppSettings {
     sampleRate: asNumberOrNull(patch.sampleRate, base.sampleRate),
     frontend: asFrontend(patch.frontend, base.frontend),
     bufferSeconds: asBufferSeconds(patch.bufferSeconds, base.bufferSeconds),
+    webgpu: asBoolean(patch.webgpu, base.webgpu),
     ui: {
       ...base.ui,
       ...(theme === undefined ? {} : { theme }),

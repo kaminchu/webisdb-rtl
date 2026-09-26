@@ -4,6 +4,7 @@ import { useStore } from '../../app/store'
 import { Button } from '../../components/Button'
 import { Panel } from '../../components/Panel'
 import { RtlFrontendMode } from '../../driver/rtlsdr/rtl2832u'
+import { isWebGpuAvailable } from '../../dsp/gpu/webgpu'
 import { loadSettings, MAX_BUFFER_SECONDS, saveSettings } from '../../storage/settings'
 import { MenuButton } from '../shell/MenuButton'
 import { ChannelSettings } from './ChannelSettings'
@@ -30,6 +31,8 @@ export function SettingsScreen() {
   const [rate, setRate] = useState(() => loadSettings().sampleRate ?? sampleRate)
   const [frontend, setFrontend] = useState(() => loadSettings().frontend)
   const [bufferInput, setBufferInput] = useState(() => String(loadSettings().bufferSeconds))
+  const webGpuSupported = isWebGpuAvailable()
+  const [webgpu, setWebgpu] = useState(() => loadSettings().webgpu && isWebGpuAvailable())
 
   const applyGain = () => {
     const value = Number.parseFloat(gainInput)
@@ -58,6 +61,12 @@ export function SettingsScreen() {
     const value = Number.parseFloat(raw)
     if (!Number.isFinite(value) || value < 0) return
     saveSettings({ bufferSeconds: Math.min(value, MAX_BUFFER_SECONDS) })
+  }
+
+  const changeWebGpu = (enabled: boolean) => {
+    if (!webGpuSupported) return
+    setWebgpu(enabled)
+    void receiverController.setWebGpu(enabled)
   }
 
   return (
@@ -156,6 +165,24 @@ export function SettingsScreen() {
               </select>
               <span className={styles.hint}>
                 現在: {(sampleRate / 1_000_000).toFixed(3)} MSps（再接続時に適用）
+              </span>
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.checkInline} htmlFor="webgpu">
+                <input
+                  id="webgpu"
+                  type="checkbox"
+                  checked={webgpu}
+                  disabled={!webGpuSupported}
+                  onChange={(event) => changeWebGpu(event.target.checked)}
+                />
+                <span>WebGPU で OFDM フロントエンドを処理</span>
+              </label>
+              <span className={styles.hint}>
+                {webGpuSupported
+                  ? '有効にすると FFT・チャネル推定・等化を GPU で実行します（変更すると受信を再開）。'
+                  : 'この環境では WebGPU を利用できません。'}
               </span>
             </div>
           </div>

@@ -74,6 +74,15 @@ describe('settings', () => {
     expect(loadSettings().frontend).toBe(RtlFrontendMode.Generic)
   })
 
+  it('defaults WebGPU off and persists the toggle', () => {
+    expect(defaultSettings().webgpu).toBe(false)
+    saveSettings({ webgpu: true })
+    expect(loadSettings().webgpu).toBe(true)
+
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ webgpu: 'yes' }))
+    expect(loadSettings().webgpu).toBe(false)
+  })
+
   it('rejects an invalid audio channel', () => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ui: { audioChannel: 'surround' } }))
     expect(loadSettings().ui.audioChannel).toBe('stereo')

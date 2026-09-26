@@ -10,6 +10,7 @@ import type { IqChunk } from '../iq/IQSource'
 import { IQFileSource } from '../iq/IQFileSource'
 import { OneSegPipeline, type OneSegPipelineStats } from '../dsp/pipeline'
 import { WasmFftBackend } from '../dsp/wasm/fft'
+import { requestWebGpuDevice } from '../dsp/gpu/webgpu'
 import { powerSpectrumDb } from '../dsp/stages/spectrum'
 import { emptyBufferMetrics, emptyReceptionQuality, emptyThroughput } from '../models/reception'
 import type { ReceiverStats } from '../models'
@@ -51,6 +52,9 @@ class RateMeter {
 
 let pipeline: OneSegPipeline | null = null
 let fileSource: IQFileSource | null = null
+let gpuDevice: GPUDevice | null = null
+let gpuAttempted = false
+let webgpuEnabled = false
 let spectrumEnabled = false
 let lastSpectrumAt = 0
 let inputSamples = 0
@@ -159,12 +163,16 @@ function ensurePipeline(options?: { sampleRate?: number }): OneSegPipeline {
           state: state === 'locked' ? 'running' : state === 'error' ? 'error' : 'running',
         }),
     },
-    { sourceSampleRate: options?.sampleRate ?? 1_200_000 },
+    { sourceSampleRate: options?.sampleRate ?? 1_200_000, gpuDevice: gpuHandle() },
   )
   return pipeline
 }
 
-function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
+function gpuHandle(): GPUDevice | undefined {
+  return webgpuEnabled ? (gpuDevice ?? undefined) : undefined
+}
+
+function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void | Promise<void> {
   const { options } = command
   void fileSource?.stop()
   pipeline?.dispose()
@@ -180,7 +188,7 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
   inputSignalSeconds = 0
   uptimeStart = performance.now()
   lastStatsAt = performance.now()
-  ensurePipeline({ sampleRate: options.sampleRate })
+  webgpuEnabled = options.webgpu ?? false
 
   if (options.source.kind === 'iq-file') {
     fileSource = new IQFileSource(new Uint8Array(options.source.data), {
@@ -191,7 +199,7 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
     fileSource.onStateChange((state) => post({ type: 'state', state }))
     fileSource.onSamples((chunk) => {
       if (chunk.endOfStream) {
-        pipeline?.flush()
+        void pipeline?.flush()
         return
       }
       const samples = Math.floor(chunk.data.length / 2)
@@ -204,10 +212,21 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
       dspMs.add(performance.now() - t0)
     })
   }
+
+  if (webgpuEnabled && gpuDevice === null && !gpuAttempted) {
+    gpuAttempted = true
+    return requestWebGpuDevice().then((device) => {
+      gpuDevice = device
+      if (!pipeline && webgpuEnabled) ensurePipeline({ sampleRate: options.sampleRate })
+    })
+  }
+  ensurePipeline({ sampleRate: options.sampleRate })
 }
 
 const handlers: {
-  [K in ReceiverCommand['type']]: (command: Extract<ReceiverCommand, { type: K }>) => void
+  [K in ReceiverCommand['type']]: (
+    command: Extract<ReceiverCommand, { type: K }>,
+  ) => void | Promise<void>
 } = {
   init: handleInit,
   iqChunk: (command) => {
@@ -259,7 +278,7 @@ const handlers: {
   },
   stop: () => {
     void fileSource?.stop()
-    pipeline?.flush()
+    void pipeline?.flush()
   },
   close: () => {
     void fileSource?.stop()
@@ -274,13 +293,15 @@ const handlers: {
 
 ctx.onmessage = (event: MessageEvent<ReceiverCommand>) => {
   const command = event.data
-  const handler = handlers[command.type] as ((c: ReceiverCommand) => void) | undefined
+  const handler = handlers[command.type] as
+    | ((c: ReceiverCommand) => void | Promise<void>)
+    | undefined
   if (!handler) {
     postError(new Error(`unknown receiver command: ${(command as { type: string }).type}`))
     return
   }
   try {
-    handler(command)
+    void Promise.resolve(handler(command)).catch(postError)
   } catch (error) {
     postError(error)
   }

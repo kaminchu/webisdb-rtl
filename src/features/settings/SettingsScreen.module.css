@@ -178,3 +178,15 @@
   font-size: 11px;
   color: var(--color-text-muted);
 }
+
+.checkInline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.checkInline input:disabled {
+  cursor: not-allowed;
+}

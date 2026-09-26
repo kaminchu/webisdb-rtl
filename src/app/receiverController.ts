@@ -154,6 +154,7 @@ export class ReceiverController {
         gainDb: settings.gainDb ?? DEFAULT_GAIN,
         ppm: 0,
         spectrumEnabled: false,
+        webgpu: settings.webgpu,
       },
     })
     await source.start()
@@ -285,6 +286,7 @@ export class ReceiverController {
           gainDb: receiver.gainDb ?? 'auto',
           ppm: receiver.ppm,
           spectrumEnabled: false,
+          webgpu: loadSettings().webgpu,
         },
       })
       if (restart) await source.start()
@@ -342,6 +344,12 @@ export class ReceiverController {
     if (loadSettings().frontend === RtlFrontendMode.Generic) await this.#reconfigureFrontend()
   }
 
+  /** Toggle WebGPU front-end processing and reconfigure when possible. */
+  async setWebGpu(enabled: boolean): Promise<void> {
+    saveSettings({ webgpu: enabled })
+    await this.#reconfigureFrontend()
+  }
+
   async #reconfigureFrontend(): Promise<void> {
     const source = this.#source
     if (!source || source.kind !== 'rtlsdr') return
@@ -366,6 +374,7 @@ export class ReceiverController {
           gainDb: receiver.gainDb ?? 'auto',
           ppm: receiver.ppm,
           spectrumEnabled: false,
+          webgpu: loadSettings().webgpu,
         },
       })
       if (restart) await source.start()

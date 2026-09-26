@@ -39,6 +39,8 @@ export interface ReceiverInitOptions {
   ppm: number
   /** Feed spectrum snapshots back to the UI. */
   spectrumEnabled?: boolean
+  /** Run the OFDM front end on WebGPU when the worker exposes a device. */
+  webgpu?: boolean
 }
 
 /** Serialized IQ chunk sent to the receiver worker from the main thread. */

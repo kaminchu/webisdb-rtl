@@ -27,6 +27,7 @@ import { OneSegDecoder } from './oneSegDecoder'
 import { WasmFftBackend } from './wasm/fft'
 import { segPilotReference } from './wasm/demap'
 import { WasmFrontend } from './wasm/frontend'
+import { WebGpuFrontend } from './gpu/ofdmFrontend'
 import { WasmOfdmSynchronizer } from './wasm/ofdm'
 import { WasmTmccDecoder } from './wasm/tmcc'
 import {
@@ -67,6 +68,8 @@ export interface OneSegPipelineOptions {
   lockStallMs?: number
   /** Monotonic clock in milliseconds; overridable for tests. */
   clock?: () => number
+  /** WebGPU device; when present the locked front end runs on the GPU. */
+  gpuDevice?: GPUDevice
 }
 
 const ACQUIRE_MIN_SAMPLES = 750_000
@@ -257,6 +260,7 @@ export class OneSegPipeline {
   private readonly options: Required<Pick<OneSegPipelineOptions, 'sourceSampleRate' | 'cutoffHz'>>
   private readonly lockStallMs: number
   private readonly clock: () => number
+  private readonly gpuDevice: GPUDevice | null
   private readonly dc = new WasmDcRemoval(0.001)
   private readonly decimator: WasmU8Decimator | null
   private resampler: WasmFractionalResampler
@@ -281,6 +285,7 @@ export class OneSegPipeline {
   private fractionalOffsetHz: number | null = null
 
   private frontend: WasmFrontend | null = null
+  private gpuFrontend: WebGpuFrontend | null = null
   private oneSeg: OneSegDecoder | null = null
   private tmccInfo: TmccInfo | null = null
   private frontendSymbolBase = 0
@@ -300,6 +305,7 @@ export class OneSegPipeline {
       cutoffHz: options.cutoffHz ?? 450_000,
     }
     this.lockStallMs = options.lockStallMs ?? DEFAULT_LOCK_STALL_MS
+    this.gpuDevice = options.gpuDevice ?? null
     this.clock =
       options.clock ??
       (typeof performance !== 'undefined' ? () => performance.now() : () => Date.now())
@@ -321,11 +327,11 @@ export class OneSegPipeline {
 
   /** Feed one raw IQ chunk (U8/I8 interleaved, or F32 complex interleaved). */
   pushIq(chunk: IqChunk): void {
-    const locked = this.state === 'locked' && this.frontend !== null
+    const locked = this.state === 'locked' && (this.frontend !== null || this.gpuFrontend !== null)
     if (this.decimator !== null && chunk.format === 'u8') {
       const data = chunk.data
       const u8 = data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>)
-      if (locked) {
+      if (locked && this.gpuFrontend === null) {
         const block = this.decimator.processResident(u8)
         if (block.length > 0) this.processLockedPointers(block)
       } else {
@@ -364,7 +370,7 @@ export class OneSegPipeline {
     }
 
     this.dc.process(re, im)
-    if (locked) {
+    if (locked && this.gpuFrontend === null) {
       const block = this.resampler.processResident(re, im)
       if (block.length > 0) this.processLockedPointers(block)
     } else {
@@ -408,8 +414,10 @@ export class OneSegPipeline {
 
   private releaseLock(): void {
     this.frontend?.dispose()
+    this.gpuFrontend?.dispose()
     this.oneSeg?.dispose()
     this.frontend = null
+    this.gpuFrontend = null
     this.oneSeg = null
     this.tmccInfo = null
     this.mode = null
@@ -425,7 +433,7 @@ export class OneSegPipeline {
   }
 
   /** Force acquisition with whatever is buffered and flush pending TS. */
-  flush(): void {
+  async flush(): Promise<void> {
     if (this.state !== 'locked') {
       if (this.bufLen > 0) {
         this.lastAcquireLen = this.bufLen
@@ -434,7 +442,8 @@ export class OneSegPipeline {
     }
     if (this.state === 'locked') {
       this.applyFrontendStats()
-      this.drainFrontend()
+      if (this.gpuFrontend) await this.gpuFrontend.finish()
+      else this.drainFrontend()
     }
     this.emitStats()
   }
@@ -447,8 +456,10 @@ export class OneSegPipeline {
     this.decimator?.reset()
     this.resampler.reset()
     this.frontend?.dispose()
+    this.gpuFrontend?.dispose()
     this.oneSeg?.dispose()
     this.frontend = null
+    this.gpuFrontend = null
     this.oneSeg = null
     this.tmccInfo = null
     this.mode = null
@@ -475,6 +486,8 @@ export class OneSegPipeline {
   /** Release all WASM state; the pipeline must not be used afterwards. */
   dispose(): void {
     this.discardBuffer()
+    this.gpuFrontend?.dispose()
+    this.gpuFrontend = null
     this.dc.dispose()
     this.decimator?.dispose()
     this.resampler.dispose()
@@ -630,7 +643,7 @@ export class OneSegPipeline {
     this.fractionalOffsetHz = fFrac
     this.tmccInfo = info
     this.oneSeg = info.layers.A !== null ? new OneSegDecoder(info) : null
-    this.frontend = new WasmFrontend({
+    const frontendConfig = {
       mode,
       fftSize: n,
       gi,
@@ -644,7 +657,13 @@ export class OneSegPipeline {
       segRef: segPilotReference(mode),
       dataIndices: [0, 1, 2, 3].map((phase) => dataCarriersFor(mode, phase)),
       tmccCarriers: tmccCarriersFor(mode),
-    })
+    }
+    this.gpuFrontend = this.gpuDevice
+      ? WebGpuFrontend.create(this.gpuDevice, frontendConfig, {
+          onPlanes: (re, im, count) => this.decodeGpuPlanes(re, im, count),
+        })
+      : null
+    this.frontend = this.gpuFrontend === null ? new WasmFrontend(frontendConfig) : null
     this.frontendSymbolBase = this.symbolsProcessed
     this.lastProgressAt = this.clock()
     this.lastProgressTsBytes = this.tsBytes
@@ -656,11 +675,21 @@ export class OneSegPipeline {
   }
 
   private processLocked(re: Float32Array, im: Float32Array): void {
-    const frontend = this.frontend
+    const frontend = this.gpuFrontend ?? this.frontend
     if (!frontend) return
     frontend.push(re, im)
     this.applyFrontendStats()
-    this.drainFrontend()
+    if (this.gpuFrontend === null) this.drainFrontend()
+  }
+
+  /** Decode equalized planes produced by the WebGPU front end. */
+  private decodeGpuPlanes(re: Float32Array, im: Float32Array, symbolCount: number): void {
+    if (this.oneSeg === null || symbolCount === 0) return
+    const out = this.oneSeg.decodeContiguous(re, im, symbolCount)
+    if (out.length > 0) {
+      this.tsBytes += out.length
+      this.callbacks.onTs?.(out)
+    }
   }
 
   /**
@@ -679,7 +708,7 @@ export class OneSegPipeline {
 
   /** Pull sync quality, MER and TMCC updates out of the fused front end. */
   private applyFrontendStats(): void {
-    const frontend = this.frontend
+    const frontend = this.gpuFrontend ?? this.frontend
     if (!frontend) return
     const stats = frontend.stats()
     this.lastGammaMag = stats.gammaMagnitude
