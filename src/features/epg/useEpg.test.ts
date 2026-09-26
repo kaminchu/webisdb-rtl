@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ConfiguredChannel, Event } from '../../models'
-import { buildChannelGuide, groupServiceIdsByChannel } from './useEpg'
+import { accumulateLiveEvents, buildChannelGuide, groupServiceIdsByChannel } from './useEpg'
 
 const NOW = new Date('2026-01-01T03:00:00.000Z')
 
@@ -134,5 +134,30 @@ describe('buildChannelGuide', () => {
       { now: NOW },
     )
     expect(guide.entries[0].events.map((event) => event.title)).toEqual(['A'])
+  })
+})
+
+describe('accumulateLiveEvents', () => {
+  it('returns the current list untouched when nothing new arrives', () => {
+    const current = [makeEvent({ eventId: 1 })]
+    expect(accumulateLiveEvents(current, [])).toBe(current)
+  })
+
+  it('appends and de-duplicates events by service and event id', () => {
+    const current = [makeEvent({ eventId: 1, title: 'old' })]
+    const next = accumulateLiveEvents(current, [
+      makeEvent({ eventId: 1, title: 'new', updatedAt: new Date(NOW.getTime() + 1000) }),
+      makeEvent({ eventId: 2, title: 'second' }),
+    ])
+    expect(next.map((event) => event.title).toSorted()).toEqual(['new', 'second'])
+  })
+
+  it('prefers the running copy over a stale one', () => {
+    const current = [makeEvent({ eventId: 1, title: 'stale', running: false })]
+    const next = accumulateLiveEvents(current, [
+      makeEvent({ eventId: 1, title: 'live', running: true }),
+    ])
+    expect(next).toHaveLength(1)
+    expect(next[0].title).toBe('live')
   })
 })

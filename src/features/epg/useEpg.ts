@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { receiverController } from '../../app/receiverController'
 import { loadStoredScanResults, openAppKeyValueStore } from '../../app/scanController'
-import { useStore } from '../../app/store'
-import type { ConfiguredChannel, Event, Service } from '../../models'
+import { store as appStore, useStore } from '../../app/store'
+import type { ConfiguredChannel, EitSection, Event, Service } from '../../models'
 import { EventRepository, pruneExpiredEvents, ServiceRepository } from '../../storage'
 
 /** Keep ended programs around briefly so the guide can show the recent past. */
@@ -14,6 +14,16 @@ export const EPG_RETENTION_MS = 3 * 60 * 60 * 1000
  * are never dropped in between.
  */
 export const EIT_SETTLE_MS = 3000
+
+/**
+ * Upper bound on the settle window. Present/following EIT repeats continuously,
+ * so the settle timer keeps resetting and a tuned service would otherwise never
+ * reach storage. The cap guarantees a flush while the service stays on air.
+ */
+export const EIT_MAX_SETTLE_MS = 5000
+
+/** Coalesce storage reloads when several services settle at the same time. */
+const RELOAD_COALESCE_MS = 200
 
 export interface ChannelGuideEntry {
   physicalChannel: number
@@ -55,6 +65,12 @@ function mergeEvents(events: Event[]): Map<string, Event> {
     if (!existing || preferEvent(event, existing)) merged.set(key, event)
   }
   return merged
+}
+
+/** Merge live EIT into the accumulated set so the guide updates before persistence. */
+export function accumulateLiveEvents(current: Event[], incoming: Event[]): Event[] {
+  if (incoming.length === 0) return current
+  return [...mergeEvents([...current, ...incoming]).values()]
 }
 
 function mergeServices(current: Service[], incoming: Service[]): Service[] {
@@ -164,10 +180,10 @@ export interface EpgState {
 
 export function useEpg(hours = 6): EpgState {
   const channels = useStore((state) => state.configuredChannels)
-  const eit = useStore((state) => state.diagnostics.eit)
   const liveServices = useStore((state) => state.diagnostics.services)
   const liveChannel = useStore((state) => state.receiver.channel)
   const [storedEvents, setStoredEvents] = useState<Event[]>([])
+  const [liveEvents, setLiveEvents] = useState<Event[]>([])
   const [storedServices, setStoredServices] = useState<Service[]>([])
   const [scanServices, setScanServices] = useState<Map<number, Service[]>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -203,13 +219,33 @@ export function useEpg(hours = 6): EpgState {
   }, [reload])
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60_000)
+    const timer = window.setInterval(() => {
+      const current = new Date()
+      setNow(current)
+      const cutoff = current.getTime() - EPG_RETENTION_MS
+      setLiveEvents((prev) => {
+        const kept = prev.filter(
+          (event) => event.startTime.getTime() + event.duration * 1000 >= cutoff,
+        )
+        return kept.length === prev.length ? prev : kept
+      })
+    }, 60_000)
     return () => window.clearInterval(timer)
   }, [])
 
+  const reloadTimer = useRef<number | null>(null)
+  const mountedRef = useRef(true)
   const pendingEit = useRef(new Map<number, Map<number, Event>>())
   const flushTimers = useRef(new Map<number, number>())
-  const mountedRef = useRef(true)
+  const maxFlushTimers = useRef(new Map<number, number>())
+
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current !== null) return
+    reloadTimer.current = window.setTimeout(() => {
+      reloadTimer.current = null
+      if (mountedRef.current) void reload()
+    }, RELOAD_COALESCE_MS)
+  }, [reload])
 
   const flushService = useCallback(
     async (serviceId: number) => {
@@ -217,6 +253,11 @@ export function useEpg(hours = 6): EpgState {
       if (timer !== undefined) {
         window.clearTimeout(timer)
         flushTimers.current.delete(serviceId)
+      }
+      const maxTimer = maxFlushTimers.current.get(serviceId)
+      if (maxTimer !== undefined) {
+        window.clearTimeout(maxTimer)
+        maxFlushTimers.current.delete(serviceId)
       }
       const buffered = pendingEit.current.get(serviceId)
       if (!buffered || buffered.size === 0) return
@@ -228,9 +269,9 @@ export function useEpg(hours = 6): EpgState {
       } catch {
         // storage unavailable
       }
-      if (mountedRef.current) await reload()
+      if (mountedRef.current) scheduleReload()
     },
-    [reload],
+    [scheduleReload],
   )
 
   const scheduleFlush = useCallback(
@@ -242,6 +283,13 @@ export function useEpg(hours = 6): EpgState {
         void flushService(serviceId)
       }, EIT_SETTLE_MS)
       flushTimers.current.set(serviceId, timer)
+      if (!maxFlushTimers.current.has(serviceId)) {
+        const maxTimer = window.setTimeout(() => {
+          maxFlushTimers.current.delete(serviceId)
+          void flushService(serviceId)
+        }, EIT_MAX_SETTLE_MS)
+        maxFlushTimers.current.set(serviceId, maxTimer)
+      }
     },
     [flushService],
   )
@@ -249,25 +297,42 @@ export function useEpg(hours = 6): EpgState {
   useEffect(() => {
     mountedRef.current = true
     const timers = flushTimers.current
+    const maxTimers = maxFlushTimers.current
     return () => {
       mountedRef.current = false
       for (const timer of timers.values()) window.clearTimeout(timer)
       timers.clear()
+      for (const timer of maxTimers.values()) window.clearTimeout(timer)
+      maxTimers.clear()
+      if (reloadTimer.current !== null) {
+        window.clearTimeout(reloadTimer.current)
+        reloadTimer.current = null
+      }
     }
   }, [])
 
   useEffect(() => {
-    if (!eit || eit.events.length === 0) return
-    const receivedAt = new Date()
-    for (const raw of eit.events) {
-      const event = { ...raw, updatedAt: receivedAt }
-      const buffered = pendingEit.current.get(event.serviceId) ?? new Map<number, Event>()
-      buffered.set(event.eventId, event)
-      pendingEit.current.set(event.serviceId, buffered)
+    let latest: EitSection | null = null
+    const handleSection = (section: EitSection): void => {
+      if (section.events.length === 0) return
+      const receivedAt = new Date()
+      const incoming = section.events.map((raw) => ({ ...raw, updatedAt: receivedAt }))
+      setLiveEvents((prev) => accumulateLiveEvents(prev, incoming))
+      for (const event of incoming) {
+        const buffered = pendingEit.current.get(event.serviceId) ?? new Map<number, Event>()
+        buffered.set(event.eventId, event)
+        pendingEit.current.set(event.serviceId, buffered)
+      }
+      for (const serviceId of new Set(incoming.map((event) => event.serviceId)))
+        scheduleFlush(serviceId)
     }
-    for (const serviceId of new Set(eit.events.map((event) => event.serviceId)))
-      scheduleFlush(serviceId)
-  }, [eit, scheduleFlush])
+    return appStore.subscribe(() => {
+      const section = appStore.getState().diagnostics.eit
+      if (!section || section === latest) return
+      latest = section
+      handleSection(section)
+    })
+  }, [scheduleFlush])
 
   useEffect(() => {
     if (liveChannel === null || liveServices.length === 0) return
@@ -324,7 +389,10 @@ export function useEpg(hours = 6): EpgState {
     [channels, scanServices, storedServices, liveChannel, liveServices],
   )
 
-  const allEvents = storedEvents
+  const allEvents = useMemo(
+    () => accumulateLiveEvents(storedEvents, liveEvents),
+    [storedEvents, liveEvents],
+  )
 
   const guide = useMemo(
     () =>
