@@ -2,37 +2,26 @@
  * WebGPU OFDM front end for the locked-state path.
  *
  * Mirrors `WasmFrontend`: owns the sample buffer, symbol timing, TMCC decode and
- * the FFT/channel-estimation/equalization data path. The heavy per-symbol work
- * (NCO derotation, batched FFT, scattered-pilot channel estimation, zero-forcing
- * equalization) runs in WebGPU compute kernels, while the sequential tracking
- * synchronizer and TMCC decoder stay on the validated WASM kernels.
+ * the FFT/channel-estimation/equalization data path. Guard-interval correlation,
+ * NCO derotation, batched FFT, scattered-pilot channel estimation and
+ * zero-forcing equalization all run in WebGPU compute kernels, while the
+ * sequential TMCC frame decoder stays on the validated WASM kernel.
  *
  * Equalized data planes are read back once per batch and handed to `onPlanes`;
  * no FFT bin or intermediate plane crosses the host per symbol.
  */
 
 import type { FrontendStats } from '../wasm/frontend'
-import { WasmOfdmSynchronizer } from '../wasm/ofdm'
+import { GpuSynchronizer, GpuSyncCorrelator } from './synchronizer'
 import { WasmTmccDecoder } from '../wasm/tmcc'
 import type { TmccInfo } from '../../models/tmcc'
 import type { TransmissionMode } from '../isdbtParams'
 import { DEMAP_WGSL, OFDM_FRONTEND_WGSL } from './shaders'
+import { BUFFER_USAGE, MAP_MODE, SHADER_STAGE } from './gpuConstants'
 
 const MAX_BATCH = 16
 const WORKGROUP = 64
 const PARAMS_FIELDS = 12
-
-// WebGPU constant namespaces are not part of the TypeScript DOM lib, so the
-// flags used here are declared locally from the spec definitions.
-const BUFFER_USAGE = {
-  MAP_READ: 0x0001,
-  COPY_SRC: 0x0004,
-  COPY_DST: 0x0008,
-  UNIFORM: 0x0040,
-  STORAGE: 0x0080,
-} as const
-const SHADER_STAGE = { COMPUTE: 0x0004 } as const
-const MAP_MODE = { READ: 0x0001 } as const
 
 const FFT_USAGE = BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST
 const META_USAGE = BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST
@@ -90,7 +79,7 @@ export class WebGpuFrontend {
   private readonly tmccCount: number
   private readonly frameStart: number
 
-  private readonly sync: WasmOfdmSynchronizer
+  private readonly sync: GpuSynchronizer
   private readonly tmcc: WasmTmccDecoder
   private readonly paramsBuffer: GPUBuffer
   private readonly dataIdxBuffer: GPUBuffer
@@ -118,7 +107,9 @@ export class WebGpuFrontend {
   private bufIm = new Float32Array(1 << 16)
   private bufLen = 0
   private bufStart = 0
-  private syncFed = 0
+  private pendingRe = new Float32Array(0)
+  private pendingIm = new Float32Array(0)
+  private pendingLen = 0
 
   private winRe: Float32Array
   private winIm: Float32Array
@@ -147,6 +138,7 @@ export class WebGpuFrontend {
       demapPipeline: GPUComputePipeline
       fftLayout: GPUBindGroupLayout
       demapLayout: GPUBindGroupLayout
+      synchronizer: GpuSynchronizer
     },
   ) {
     this.device = device
@@ -163,7 +155,7 @@ export class WebGpuFrontend {
     this.demapPipeline = resources.demapPipeline
     this.fftLayout = resources.fftLayout
     this.demapLayout = resources.demapLayout
-    this.sync = new WasmOfdmSynchronizer(params.fftSize, params.gi, params.sampleRate, true)
+    this.sync = resources.synchronizer
     this.tmcc = new WasmTmccDecoder(params.mode, params.gi)
     this.currentTmcc = initialTmccInfo(params.mode, params.gi)
     this.paramsBuffer = device.createBuffer({
@@ -218,11 +210,25 @@ export class WebGpuFrontend {
         layout: device.createPipelineLayout({ bindGroupLayouts: [demapLayout] }),
         compute: { module: demapModule, entryPoint: 'demap_main' },
       })
+      const correlator = GpuSyncCorrelator.create(
+        device,
+        params.fftSize,
+        Math.floor(params.fftSize / params.gi),
+      )
+      if (correlator === null) return null
+      const synchronizer = new GpuSynchronizer(
+        correlator,
+        params.fftSize,
+        params.gi,
+        params.sampleRate,
+        true,
+      )
       return new WebGpuFrontend(device, params, callbacks, {
         fftPipeline,
         demapPipeline,
         fftLayout,
         demapLayout,
+        synchronizer,
       })
     } catch {
       return null
@@ -232,34 +238,8 @@ export class WebGpuFrontend {
   /** Append resampled complex samples; symbol windows are queued for the GPU. */
   push(re: Float32Array, im: Float32Array): void {
     if (this.disposed || re.length === 0) return
-    this.append(re, im)
-    if (this.syncFed < this.bufLen) {
-      const fed = this.sync.process(
-        this.bufRe.subarray(this.syncFed, this.bufLen),
-        this.bufIm.subarray(this.syncFed, this.bufLen),
-      )
-      this.syncFed = this.bufLen
-      this.lastGammaMag = fed.gammaMagnitude
-      this.lastPhi = fed.phi
-      for (const raw of fed.symbolStarts) {
-        const start = Math.round(raw)
-        const rel = start - this.bufStart
-        if (rel < 0 || rel + this.n > this.bufLen) continue
-        this.enqueueWindow(rel, this.symbolIndex)
-        this.symbolIndex += 1
-        this.symbolsProcessed += 1
-      }
-    }
-    const keep = 2 * this.n
-    if (this.bufLen > keep) {
-      const drop = this.bufLen - keep
-      this.bufRe.copyWithin(0, drop, this.bufLen)
-      this.bufIm.copyWithin(0, drop, this.bufLen)
-      this.bufLen -= drop
-      this.bufStart += drop
-      this.syncFed = Math.max(0, this.syncFed - drop)
-    }
-    if (this.winCount - this.winHead >= MAX_BATCH) this.schedule()
+    this.appendPending(re, im)
+    this.schedule()
   }
 
   stats(): FrontendStats {
@@ -303,7 +283,24 @@ export class WebGpuFrontend {
     return buffer
   }
 
-  private append(re: Float32Array, im: Float32Array): void {
+  private appendPending(re: Float32Array, im: Float32Array): void {
+    const need = this.pendingLen + re.length
+    if (need > this.pendingRe.length) {
+      let cap = this.pendingRe.length || 1 << 14
+      while (cap < need) cap <<= 1
+      const nr = new Float32Array(cap)
+      nr.set(this.pendingRe.subarray(0, this.pendingLen))
+      const ni = new Float32Array(cap)
+      ni.set(this.pendingIm.subarray(0, this.pendingLen))
+      this.pendingRe = nr
+      this.pendingIm = ni
+    }
+    this.pendingRe.set(re, this.pendingLen)
+    this.pendingIm.set(im, this.pendingLen)
+    this.pendingLen += re.length
+  }
+
+  private appendToBuffer(re: Float32Array, im: Float32Array): void {
     const need = this.bufLen + re.length
     if (need > this.bufRe.length) {
       let cap = this.bufRe.length || 1024
@@ -318,6 +315,16 @@ export class WebGpuFrontend {
     this.bufRe.set(re, this.bufLen)
     this.bufIm.set(im, this.bufLen)
     this.bufLen += re.length
+  }
+
+  private trimBuffer(): void {
+    const keep = 2 * this.n
+    if (this.bufLen <= keep) return
+    const drop = this.bufLen - keep
+    this.bufRe.copyWithin(0, drop, this.bufLen)
+    this.bufIm.copyWithin(0, drop, this.bufLen)
+    this.bufLen -= drop
+    this.bufStart += drop
   }
 
   private enqueueWindow(rel: number, symbolIndex: number): void {
@@ -354,26 +361,51 @@ export class WebGpuFrontend {
   }
 
   private async drain(): Promise<void> {
-    while (!this.disposed && this.winHead < this.winCount) {
-      const count = Math.min(MAX_BATCH, this.winCount - this.winHead)
-      const batch = this.collectBatch(count)
-      await this.processBatch(batch)
-      this.winHead += count
-    }
-    if (this.winHead > 0) {
-      const remaining = this.winCount - this.winHead
-      if (remaining > 0) {
-        this.winRe.copyWithin(0, this.winHead * this.n, this.winCount * this.n)
-        this.winIm.copyWithin(0, this.winHead * this.n, this.winCount * this.n)
-        this.winStart.splice(0, this.winHead)
-        this.winSymbol.splice(0, this.winHead)
-      } else {
-        this.winStart.length = 0
-        this.winSymbol.length = 0
+    while (!this.disposed && (this.pendingLen > 0 || this.winHead < this.winCount)) {
+      if (this.pendingLen > 0) {
+        const len = this.pendingLen
+        const re = this.pendingRe.slice(0, len)
+        const im = this.pendingIm.slice(0, len)
+        this.pendingLen = 0
+        this.appendToBuffer(re, im)
+        const fed = await this.sync.process(re, im)
+        if (this.disposed) return
+        this.lastGammaMag = fed.gammaMagnitude
+        this.lastPhi = fed.phi
+        for (const raw of fed.symbolStarts) {
+          const start = Math.round(raw)
+          const rel = start - this.bufStart
+          if (rel < 0 || rel + this.n > this.bufLen) continue
+          this.enqueueWindow(rel, this.symbolIndex)
+          this.symbolIndex += 1
+          this.symbolsProcessed += 1
+        }
+        this.trimBuffer()
       }
-      this.winCount = remaining
-      this.winHead = 0
+      while (!this.disposed && this.winHead < this.winCount) {
+        const count = Math.min(MAX_BATCH, this.winCount - this.winHead)
+        const batch = this.collectBatch(count)
+        await this.processBatch(batch)
+        this.winHead += count
+      }
+      this.compactWindows()
     }
+  }
+
+  private compactWindows(): void {
+    if (this.winHead === 0) return
+    const remaining = this.winCount - this.winHead
+    if (remaining > 0) {
+      this.winRe.copyWithin(0, this.winHead * this.n, this.winCount * this.n)
+      this.winIm.copyWithin(0, this.winHead * this.n, this.winCount * this.n)
+      this.winStart.splice(0, this.winHead)
+      this.winSymbol.splice(0, this.winHead)
+    } else {
+      this.winStart.length = 0
+      this.winSymbol.length = 0
+    }
+    this.winCount = remaining
+    this.winHead = 0
   }
 
   private collectBatch(count: number): Batch {
