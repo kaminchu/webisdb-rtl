@@ -197,7 +197,7 @@ function u8Bytes(n: number, seed: number): Uint8Array {
 }
 
 describe('WasmU8Decimator', () => {
-  it.each([100_000, -100_000, 214_000, -214_000])(
+  it.each([25_000, -25_000, 100_000, -100_000, 214_000, -214_000, 240_000, -240_000])(
     'preserves %s Hz while rejecting signals that alias onto it',
     (frequency) => {
       const rate = ONESEG_SAMPLING_HZ * 2

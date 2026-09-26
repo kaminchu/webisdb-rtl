@@ -1,5 +1,8 @@
 # WebISDB-RTL 向け RTL2832U「ISDB-T mode」調査メモ
 
+実装後の検証結果は[ISDB-Tフロントエンドの軽量化と受信検証](isdbt-frontend-validation.md)を参照。
+通常のRTL-SDR設定では単純間引きによる折り返しが発生するため、現在はWASMの専用ハーフバンドFIRを併用する。
+
 ## 目的
 
 `webisdb-rtl` は、RTL2832U から WebUSB で IQ を取得し、ブラウザ内で ISDB-T 1seg の OFDM 同期、FFT、TMCC、等化、FEC、MPEG-TS 化、WebCodecs 再生まで行う実装です。

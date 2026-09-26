@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { IqChunk } from '../iq/IQSource'
 import type { TmccInfo } from '../models/tmcc'
@@ -18,6 +18,7 @@ function pushFile(
   path: string,
   sourceSampleRate = 1_200_000,
   shiftHz = 0,
+  tsOutputPath?: string,
 ): {
   locked: TmccInfo | null
   stats: OneSegPipelineStats | null
@@ -52,9 +53,11 @@ function pushFile(
   })
   let tsBytes = 0
   let tsPackets = 0
+  const tsBlocks: Uint8Array[] = []
   const pipe = new OneSegPipeline(
     {
       onTs: (b) => {
+        if (tsOutputPath) tsBlocks.push(b.slice())
         tsBytes += b.length
         for (let i = 0; i + 188 <= b.length; i += 188) if (b[i] === 0x47) tsPackets++
         transport.push(b)
@@ -93,6 +96,8 @@ function pushFile(
     pipe.pushIq(chunk)
   }
   pipe.flush()
+  pipe.dispose()
+  if (tsOutputPath) writeFileSync(tsOutputPath, Buffer.concat(tsBlocks))
   return {
     locked: tmccs.find((t) => t.locked) ?? null,
     stats: stats[stats.length - 1] ?? null,
@@ -107,6 +112,28 @@ function pushFile(
 
 const IQ_FILES = ['/tmp/opencode/iq/all19.iq', '/tmp/opencode/iq/all23.iq']
 const LIVE_IQ = '/tmp/opencode/iq/live17.iq'
+const ISDBT_IQ = process.env.ISDBT_IQ_FILE ?? '/tmp/opencode/isdbt19.u8'
+
+describe.skipIf(!existsSync(ISDBT_IQ))('OneSegPipeline ISDB-T hardware rate', () => {
+  it('decodes video and audio from filtered 128/63 MSps U8 IQ', () => {
+    const start = performance.now()
+    const r = pushFile(ISDBT_IQ, ONESEG_SAMPLING_HZ * 2, 0, process.env.ISDBT_TS_FILE)
+    console.log({
+      elapsedMs: performance.now() - start,
+      tsPackets: r.tsPackets,
+      pes: r.pes,
+      merDb: r.stats?.quality.merDb,
+      states: r.states,
+    })
+    expect(r.locked?.layers.A?.segments).toBe(1)
+    expect(r.states).toContain('locked')
+    expect(r.tsPackets).toBeGreaterThan(100)
+    expect(r.pes.video).toBeGreaterThan(0)
+    expect(r.pes.audio).toBeGreaterThan(0)
+    expect(r.serviceIds.length).toBeGreaterThan(0)
+    expect(r.transportStreamId).not.toBeNull()
+  }, 120_000)
+})
 
 describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', () => {
   it.each([-1, 1])(
@@ -124,7 +151,7 @@ describe.skipIf(!IQ_FILES.some((p) => existsSync(p)))('OneSegPipeline real IQ', 
     it.skipIf(!existsSync(path))(
       `locks TMCC and reports fields for ${path}`,
       () => {
-        const r = pushFile(path)
+        const r = pushFile(path, 1_200_000, 0, process.env.GENERIC_TS_FILE)
         // eslint-disable-next-line no-console
         console.log(
           `[pipeline] ${path} locked=${r.locked !== null} mode=${r.locked?.mode} gi=${r.locked?.guardIntervalRatio} ` +

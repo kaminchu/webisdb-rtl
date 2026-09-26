@@ -63,7 +63,7 @@ export class U8Decimator {
   constructor(factor: number, alpha = 0.001) {
     this.factor = Math.max(1, Math.floor(factor))
     this.alpha = alpha
-    this.taps = new Float64Array(this.factor === 1 ? 1 : 63)
+    this.taps = new Float64Array(this.factor === 1 ? 1 : this.factor === 2 ? 31 : 63)
     const mid = (this.taps.length - 1) / 2
     let sum = 0
     for (let k = 0; k < this.taps.length; k++) {

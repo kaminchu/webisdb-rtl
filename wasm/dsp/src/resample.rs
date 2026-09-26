@@ -337,7 +337,9 @@ pub extern "C" fn resample_out_im(ptr: *const FractionalResampler) -> *const f32
 ///
 /// A windowed-sinc FIR runs before downsampling: the RTL-SDR hardware still
 /// passes surrounding ISDB-T segments, which otherwise alias into one-seg.
-/// Only retained outputs evaluate the FIR (one fixed polyphase branch).
+/// The 2:1 path uses a 31-tap halfband: alternating taps are zero and symmetric
+/// pairs share a multiply, leaving eight pair products and the centre tap per
+/// component. Its transition band lies outside the +/-214 kHz one-seg payload.
 pub struct U8Decimator {
     factor: i32,
     phase: i32,
@@ -348,6 +350,7 @@ pub struct U8Decimator {
     history_re: Vec<f64>,
     history_im: Vec<f64>,
     cursor: usize,
+    halfband_input: Vec<f32>,
     out_re: Vec<f32>,
     out_im: Vec<f32>,
 }
@@ -355,7 +358,11 @@ pub struct U8Decimator {
 impl U8Decimator {
     fn new(factor: i32, alpha: f64) -> Self {
         let factor = factor.max(1);
-        let len = if factor == 1 { 1 } else { 63 };
+        let len = match factor {
+            1 => 1,
+            2 => 31,
+            _ => 63,
+        };
         let mid = (len - 1) as f64 / 2.0;
         let mut taps = vec![0.0; len];
         let mut sum = 0.0;
@@ -379,9 +386,10 @@ impl U8Decimator {
             dc_re: 0.0,
             dc_im: 0.0,
             taps,
-            history_re: vec![0.0; len],
-            history_im: vec![0.0; len],
+            history_re: vec![0.0; len.next_power_of_two()],
+            history_im: vec![0.0; len.next_power_of_two()],
             cursor: 0,
+            halfband_input: vec![0.0; 60],
             out_re: Vec::new(),
             out_im: Vec::new(),
         }
@@ -394,6 +402,8 @@ impl U8Decimator {
         self.history_re.fill(0.0);
         self.history_im.fill(0.0);
         self.cursor = 0;
+        self.halfband_input.clear();
+        self.halfband_input.resize(60, 0.0);
         self.out_re.clear();
         self.out_im.clear();
     }
@@ -401,12 +411,17 @@ impl U8Decimator {
     fn process(&mut self, data: &[u8]) {
         self.out_re.clear();
         self.out_im.clear();
+        if self.factor == 2 {
+            self.process_halfband(data);
+            return;
+        }
         let factor = self.factor;
         let alpha = self.alpha;
         let mut phase = self.phase;
         let mut dc_re = self.dc_re;
         let mut dc_im = self.dc_im;
         let samples = data.len() / 2;
+        let mask = self.history_re.len() - 1;
         for s in 0..samples {
             self.history_re[self.cursor] = (data[2 * s] as f64 - 127.5) / 127.5;
             self.history_im[self.cursor] = (data[2 * s + 1] as f64 - 127.5) / 127.5;
@@ -417,18 +432,14 @@ impl U8Decimator {
                 for tap in &self.taps {
                     re += tap * self.history_re[index];
                     im += tap * self.history_im[index];
-                    index = if index == 0 {
-                        self.taps.len() - 1
-                    } else {
-                        index - 1
-                    };
+                    index = index.wrapping_sub(1) & mask;
                 }
                 dc_re += alpha * (re - dc_re);
                 dc_im += alpha * (im - dc_im);
                 self.out_re.push((re - dc_re) as f32);
                 self.out_im.push((im - dc_im) as f32);
             }
-            self.cursor = (self.cursor + 1) % self.taps.len();
+            self.cursor = (self.cursor + 1) & mask;
             phase += 1;
             if phase >= factor {
                 phase = 0;
@@ -437,6 +448,36 @@ impl U8Decimator {
         self.phase = phase;
         self.dc_re = dc_re;
         self.dc_im = dc_im;
+    }
+
+    fn process_halfband(&mut self, data: &[u8]) {
+        let samples = data.len() / 2;
+        // Retain 30 complex samples before each chunk so FIR windows are contiguous.
+        // Centred U8 values and their pair sums are exact in f32; normalise only outputs.
+        self.halfband_input
+            .extend(data[..samples * 2].iter().map(|&x| x as f32 - 127.5));
+        let mut dc_re = self.dc_re;
+        let mut dc_im = self.dc_im;
+        for s in (self.phase as usize..samples).step_by(2) {
+            let window: &[f32; 62] = self.halfband_input[2 * s..2 * s + 62].try_into().unwrap();
+            let mut re = self.taps[15] * window[30] as f64;
+            let mut im = self.taps[15] * window[31] as f64;
+            for k in (0..15).step_by(2) {
+                re += self.taps[k] * (window[2 * k] + window[60 - 2 * k]) as f64;
+                im += self.taps[k] * (window[2 * k + 1] + window[61 - 2 * k]) as f64;
+            }
+            re *= 1.0 / 127.5;
+            im *= 1.0 / 127.5;
+            dc_re += self.alpha * (re - dc_re);
+            dc_im += self.alpha * (im - dc_im);
+            self.out_re.push((re - dc_re) as f32);
+            self.out_im.push((im - dc_im) as f32);
+        }
+        self.phase = (self.phase + samples as i32) & 1;
+        self.dc_re = dc_re;
+        self.dc_im = dc_im;
+        self.halfband_input.copy_within(samples * 2.., 0);
+        self.halfband_input.truncate(60);
     }
 }
 
