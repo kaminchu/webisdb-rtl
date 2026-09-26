@@ -187,6 +187,22 @@ the WASM wrappers in the corresponding `*.test.ts` files. Tests run in a happy-d
 with colocated `*.test.ts` files; DSP and TS layers use synthetic builders rather than committed
 captures. Real IQ test files are read from `tests/fixtures/` (gitignored) when available.
 
+The WebGPU shader regression test runs in headless Chrome with SwiftShader. Set
+`WEBGPU_CHROME` to a Chrome/Chromium executable to enable it; otherwise it is skipped:
+
+```bash
+WEBGPU_CHROME=/usr/bin/google-chrome npm test -- src/dsp/gpu/shaders.test.ts
+```
+
+To also check sustained reception and video/audio PES output with WebGPU enabled, set
+`WEBGPU_IQ_FILE` to a filtered 128/63 MSps U8 IQ capture. The test feeds it at real-time speed
+with the production lock-stall timeout and verifies that reception does not restart acquisition:
+
+```bash
+WEBGPU_CHROME=/usr/bin/google-chrome WEBGPU_IQ_FILE=/tmp/opencode/isdbt19.u8 \
+  npm test -- src/dsp/gpu/shaders.test.ts
+```
+
 See [docs/architecture.md](docs/architecture.md) (Japanese) for the receive chain, the WebUSB
 driver, the supported parameters, the project layout and the testing approach.
 

@@ -441,9 +441,9 @@ export class OneSegPipeline {
       }
     }
     if (this.state === 'locked') {
-      this.applyFrontendStats()
       if (this.gpuFrontend) await this.gpuFrontend.finish()
       else this.drainFrontend()
+      this.applyFrontendStats()
     }
     this.emitStats()
   }

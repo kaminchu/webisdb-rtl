@@ -2,17 +2,18 @@
  * WebGPU OFDM front end for the locked-state path.
  *
  * Mirrors `WasmFrontend`: owns the sample buffer, symbol timing, TMCC decode and
- * the FFT/channel-estimation/equalization data path. Guard-interval correlation,
- * NCO derotation, batched FFT, scattered-pilot channel estimation and
- * zero-forcing equalization all run in WebGPU compute kernels, while the
- * sequential TMCC frame decoder stays on the validated WASM kernel.
+ * the FFT/channel-estimation/equalization data path. NCO derotation, batched FFT,
+ * scattered-pilot channel estimation and zero-forcing equalization run in
+ * WebGPU compute kernels. Timing tracking and TMCC decoding stay in WASM:
+ * tracking depends on each preceding symbol's peak, so GPU correlation would
+ * require a blocking readback per symbol and stall real-time reception.
  *
  * Equalized data planes are read back once per batch and handed to `onPlanes`;
  * no FFT bin or intermediate plane crosses the host per symbol.
  */
 
 import type { FrontendStats } from '../wasm/frontend'
-import { GpuSynchronizer, GpuSyncCorrelator } from './synchronizer'
+import { WasmOfdmSynchronizer } from '../wasm/ofdm'
 import { WasmTmccDecoder } from '../wasm/tmcc'
 import type { TmccInfo } from '../../models/tmcc'
 import type { TransmissionMode } from '../isdbtParams'
@@ -79,7 +80,7 @@ export class WebGpuFrontend {
   private readonly tmccCount: number
   private readonly frameStart: number
 
-  private readonly sync: GpuSynchronizer
+  private readonly sync: WasmOfdmSynchronizer
   private readonly tmcc: WasmTmccDecoder
   private readonly paramsBuffer: GPUBuffer
   private readonly dataIdxBuffer: GPUBuffer
@@ -138,7 +139,7 @@ export class WebGpuFrontend {
       demapPipeline: GPUComputePipeline
       fftLayout: GPUBindGroupLayout
       demapLayout: GPUBindGroupLayout
-      synchronizer: GpuSynchronizer
+      synchronizer: WasmOfdmSynchronizer
     },
   ) {
     this.device = device
@@ -210,14 +211,7 @@ export class WebGpuFrontend {
         layout: device.createPipelineLayout({ bindGroupLayouts: [demapLayout] }),
         compute: { module: demapModule, entryPoint: 'demap_main' },
       })
-      const correlator = GpuSyncCorrelator.create(
-        device,
-        params.fftSize,
-        Math.floor(params.fftSize / params.gi),
-      )
-      if (correlator === null) return null
-      const synchronizer = new GpuSynchronizer(
-        correlator,
+      const synchronizer = new WasmOfdmSynchronizer(
         params.fftSize,
         params.gi,
         params.sampleRate,
@@ -368,7 +362,7 @@ export class WebGpuFrontend {
         const im = this.pendingIm.slice(0, len)
         this.pendingLen = 0
         this.appendToBuffer(re, im)
-        const fed = await this.sync.process(re, im)
+        const fed = this.sync.process(re, im)
         if (this.disposed) return
         this.lastGammaMag = fed.gammaMagnitude
         this.lastPhi = fed.phi
