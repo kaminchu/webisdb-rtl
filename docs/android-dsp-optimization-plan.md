@@ -14,10 +14,18 @@
   `pendingPointers`、`WasmOneSegDecoder.decodePointers`、`OneSegDecoder.decodeResident`、
   locked時の`OneSegPipeline`接続。Frontend→FECのstagingコピーを削除。
 - Phase 1：Receiver worker→MainのTS二重`.slice()`を削除（所有コピーをTransfer）。
-- Main→Receiver workerのIQコピー削減、FFT/Viterbi等のf32・SIMD化は**未実装**。
+- Phase 1：`IQSource.onSamples`に`transfer`オプションを追加し、単一購読者への
+  バッファ所有権移譲を契約化。`receiverController`は`.slice()`を廃止し、USBの
+  `bulkIn`が返すバッファをそのままTransferする。複数購読者・offset付きviewでは
+  従来どおりコピーする。
+- Phase 3A：`FftPlan`を追加。bit reversalとstage別twiddleを事前計算し、locked経路の
+  FFTをf32x4 SIMD化。`WasmFftBackend`もサイズ別planを再利用する。f32化の誤差は
+  TS参照比で相対L2約`1.3e-7`、絶対最大約`1.1e-5`（n=1024、既存テストは維持）。
+- Phase 3B：streaming Viterbiのメトリックと枝メトリックをi32化し、ACSをi32x4 SIMD化。
+  `acs_scalar`とwasm SIMDは同一出力で、全rate・reset・分割がTS参照とbyte一致。
 - これらは開発機x86で既存テスト（実録音IQ含む）により検証済み。**Fire実機評価は未実施**。
 
-コード確認時点のHEAD：`128755b`。
+コード確認時点のHEAD：`8c4ba9c`（Phase 1 residentポインタ経路を含む）。
 実装開始時には`git status`、履歴、`AGENTS.md`を再確認し、以降の変更と突き合わせること。
 
 ## 1. ユーザーの目的と今回の症状

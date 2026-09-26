@@ -70,6 +70,53 @@ describe('RTLSDRSource', () => {
     expect(chunks).toHaveLength(2)
   })
 
+  it('hands the bulk buffer to a sole transfer subscriber without copying', async () => {
+    const transport = new MockUsbTransport()
+    transport.controlInHandler = (_request, _value, _index, length) =>
+      new Uint8Array(length).fill(0xa3)
+    const source = new RTLSDRSource(transport)
+    const transferred: IqChunk[] = []
+    source.onSamples((chunk) => transferred.push(chunk), { transfer: true })
+    await source.open()
+    const buffer = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8])
+    transport.pushBulk(buffer)
+    await source.start()
+    await tick()
+
+    expect(transferred).toHaveLength(1)
+    expect(transferred[0].data).toBe(buffer)
+
+    const stopping = source.stop()
+    transport.releasePendingBulk()
+    await stopping
+    await source.close()
+  })
+
+  it('copies for a transfer subscriber when another subscriber is attached', async () => {
+    const transport = new MockUsbTransport()
+    transport.controlInHandler = (_request, _value, _index, length) =>
+      new Uint8Array(length).fill(0xa3)
+    const source = new RTLSDRSource(transport)
+    const transferred: IqChunk[] = []
+    const shared: IqChunk[] = []
+    source.onSamples((chunk) => transferred.push(chunk), { transfer: true })
+    source.onSamples((chunk) => shared.push(chunk))
+    await source.open()
+    const buffer = Uint8Array.from([1, 2, 3, 4])
+    transport.pushBulk(buffer)
+    await source.start()
+    await tick()
+
+    expect(shared[0].data).toBe(buffer)
+    expect(transferred[0].data).not.toBe(buffer)
+    expect(Array.from(transferred[0].data)).toEqual([1, 2, 3, 4])
+
+    const stopping = source.stop()
+    transport.releasePendingBulk()
+    await stopping
+    await source.close()
+  })
+
   it('recovers from a transient bulk transfer failure', async () => {
     const transport = new MockUsbTransport()
     transport.controlInHandler = (_request, _value, _index, length) =>

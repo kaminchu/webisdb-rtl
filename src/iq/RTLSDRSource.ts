@@ -4,7 +4,15 @@
  * Wraps `UsbTransport` + `Rtl2832u` + a `Tuner` behind the `IQSource` interface.
  * Bulk IN transfers are re-submitted in an async loop and emitted as U8 I/Q chunks.
  */
-import type { IQSource, IQSourceDescriptor, IQSourceKind, IQSourceState, IqChunk } from './IQSource'
+import type {
+  IQSource,
+  IQSourceDescriptor,
+  IQSourceKind,
+  IQSourceState,
+  IqChunk,
+  IqSubscriptionOptions,
+} from './IQSource'
+import { deliverIqChunk } from './IQSource'
 import type { UsbTransport } from '../driver/rtlsdr/usbTransport'
 import { Rtl2832u, RTL_BULK_ENDPOINT } from '../driver/rtlsdr/rtl2832u'
 import {
@@ -59,7 +67,7 @@ export class RTLSDRSource implements IQSource {
   private readTask: Promise<void> | null = null
   private unsubscribeDisconnect: (() => void) | null = null
 
-  private readonly sampleCallbacks = new Set<(chunk: IqChunk) => void>()
+  private readonly sampleCallbacks = new Map<(chunk: IqChunk) => void, boolean>()
   private readonly stateCallbacks = new Set<(state: IQSourceState) => void>()
 
   constructor(transport: UsbTransport, options: RTLSDRSourceOptions = {}) {
@@ -171,8 +179,8 @@ export class RTLSDRSource implements IQSource {
     this.setState('open')
   }
 
-  onSamples(cb: (chunk: IqChunk) => void): () => void {
-    this.sampleCallbacks.add(cb)
+  onSamples(cb: (chunk: IqChunk) => void, options: IqSubscriptionOptions = {}): () => void {
+    this.sampleCallbacks.set(cb, options.transfer === true)
     return () => this.sampleCallbacks.delete(cb)
   }
 
@@ -225,7 +233,7 @@ export class RTLSDRSource implements IQSource {
           sequence: this.sequence++,
           timestamp: performance.now(),
         }
-        for (const cb of this.sampleCallbacks) cb(chunk)
+        deliverIqChunk(this.sampleCallbacks, chunk)
       }
     } finally {
       // Outstanding transfers may never settle after a stall; discard them so a

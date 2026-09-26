@@ -44,6 +44,19 @@ export interface IQSourceDescriptor {
   centerFrequency: number
 }
 
+export interface IqSubscriptionOptions {
+  /**
+   * Request ownership of `chunk.data.buffer` for this subscriber. A source only
+   * honors it while this is the sole subscriber with an exactly-covering buffer;
+   * otherwise it delivers a private whole-buffer copy so a transfer cannot detach
+   * data another subscriber (or the source itself) still reads.
+   *
+   * Once honored, the subscriber owns the buffer; the source must not read or
+   * reuse the chunk after the callback returns.
+   */
+  transfer?: boolean
+}
+
 export interface IQSource {
   readonly kind: IQSourceKind
   readonly descriptor: IQSourceDescriptor
@@ -62,14 +75,38 @@ export interface IQSource {
   stop(): Promise<void>
 
   /**
-   * Subscribe to IQ chunks. Returns an unsubscribe function.
-   * Implementations must not retain references to `chunk.data` after the callback
-   * returns when the buffer is a Transferable.
+   * Subscribe to IQ chunks. Returns an unsubscribe function. With
+   * `options.transfer` an exclusive subscriber receives a buffer it may transfer;
+   * see `IqSubscriptionOptions`.
    */
-  onSamples(cb: (chunk: IqChunk) => void): () => void
+  onSamples(cb: (chunk: IqChunk) => void, options?: IqSubscriptionOptions): () => void
 
   /** Subscribe to state transitions. Returns an unsubscribe function. */
   onStateChange(cb: (state: IQSourceState) => void): () => void
+}
+
+/** True when `data` exactly covers its backing buffer, so the buffer can be transferred whole. */
+export function isTransferableBuffer(data: ArrayBufferView): boolean {
+  return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+}
+
+/**
+ * Deliver one chunk to every sink, honoring the transfer contract: a subscriber
+ * that requested ownership gets the original buffer only when it is the sole
+ * sink and the chunk covers the whole buffer; otherwise it receives a copy.
+ */
+export function deliverIqChunk(
+  sinks: ReadonlyMap<(chunk: IqChunk) => void, boolean>,
+  chunk: IqChunk,
+): void {
+  const transferable = sinks.size === 1 && isTransferableBuffer(chunk.data)
+  for (const [cb, wantsTransfer] of sinks) {
+    if (wantsTransfer && !transferable) {
+      cb({ ...chunk, data: chunk.data.slice() as IqChunk['data'] })
+    } else {
+      cb(chunk)
+    }
+  }
 }
 
 /** Samples (complex) per second for a given format and interleaved length. */

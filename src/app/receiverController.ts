@@ -183,19 +183,22 @@ export class ReceiverController {
 
   #attachSource(source: IQSource): void {
     this.#source = source
-    this.#unsubscribeSamples = source.onSamples((chunk) => {
-      if (chunk.endOfStream) return
-      const copy = (chunk.data as Uint8Array).slice()
-      const init: IqChunkInit = {
-        data: copy.buffer,
-        format: chunk.format,
-        sampleRate: chunk.sampleRate,
-        centerFrequency: chunk.centerFrequency,
-        sequence: chunk.sequence,
-        timestamp: chunk.timestamp,
-      }
-      this.#postReceiver({ type: 'iqChunk', chunk: init }, [copy.buffer])
-    })
+    this.#unsubscribeSamples = source.onSamples(
+      (chunk) => {
+        if (chunk.endOfStream) return
+        const buffer = (chunk.data as Uint8Array).buffer as ArrayBuffer
+        const init: IqChunkInit = {
+          data: buffer,
+          format: chunk.format,
+          sampleRate: chunk.sampleRate,
+          centerFrequency: chunk.centerFrequency,
+          sequence: chunk.sequence,
+          timestamp: chunk.timestamp,
+        }
+        this.#postReceiver({ type: 'iqChunk', chunk: init }, [buffer])
+      },
+      { transfer: true },
+    )
     this.#unsubscribeState = source.onStateChange((state) => {
       store.setState((prev) => ({ receiver: { ...prev.receiver, state } }))
     })

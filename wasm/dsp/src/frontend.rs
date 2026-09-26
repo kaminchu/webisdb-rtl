@@ -11,7 +11,7 @@
 use std::vec::Vec;
 
 use crate::demap::demap_process_symbol;
-use crate::fft::fft_forward;
+use crate::fft::FftPlan;
 use crate::ofdm::{
     ofdm_sync_create, ofdm_sync_destroy, ofdm_sync_process, ofdm_sync_reset, ofdm_sync_starts_ptr,
     SyncState,
@@ -35,6 +35,7 @@ pub struct Frontend {
     sync: *mut SyncState,
     tmcc: TmccDecoder,
     tmcc_carriers: Vec<u32>,
+    fft_plan: FftPlan,
     fft_re: Vec<f32>,
     fft_im: Vec<f32>,
     tmcc_re: Vec<f32>,
@@ -115,7 +116,7 @@ impl Frontend {
         let rel = rel as usize;
         self.fft_re[..self.n].copy_from_slice(&self.buf_re[rel..rel + self.n]);
         self.fft_im[..self.n].copy_from_slice(&self.buf_im[rel..rel + self.n]);
-        fft_forward(self.fft_re.as_mut_ptr(), self.fft_im.as_mut_ptr(), self.n);
+        self.fft_plan.forward(&mut self.fft_re, &mut self.fft_im);
 
         let angle = -2.0
             * core::f64::consts::PI
@@ -307,6 +308,7 @@ pub extern "C" fn frontend_create(
         sync,
         tmcc,
         tmcc_carriers,
+        fft_plan: FftPlan::new(fft_size),
         fft_re: vec![0.0; fft_size],
         fft_im: vec![0.0; fft_size],
         tmcc_re: vec![0.0; tmcc_count],

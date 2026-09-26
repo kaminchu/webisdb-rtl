@@ -9,7 +9,9 @@ import type {
   IQSourceState,
   IqChunk,
   IqSampleFormat,
+  IqSubscriptionOptions,
 } from './IQSource'
+import { deliverIqChunk } from './IQSource'
 import type { IqMetadata } from './iqFormat'
 
 const DEFAULT_CHUNK_SAMPLES = 16384
@@ -42,7 +44,7 @@ export class IQFileSource implements IQSource {
   private pacedStart = 0
   private pacedEmitted = 0
 
-  private readonly sampleCallbacks = new Set<(chunk: IqChunk) => void>()
+  private readonly sampleCallbacks = new Map<(chunk: IqChunk) => void, boolean>()
   private readonly stateCallbacks = new Set<(state: IQSourceState) => void>()
 
   constructor(
@@ -130,8 +132,8 @@ export class IQFileSource implements IQSource {
     if (this.currentState === 'running') this.setState('open')
   }
 
-  onSamples(cb: (chunk: IqChunk) => void): () => void {
-    this.sampleCallbacks.add(cb)
+  onSamples(cb: (chunk: IqChunk) => void, options: IqSubscriptionOptions = {}): () => void {
+    this.sampleCallbacks.set(cb, options.transfer === true)
     return () => this.sampleCallbacks.delete(cb)
   }
 
@@ -180,7 +182,7 @@ export class IQFileSource implements IQSource {
           ? Date.now() - this.pacedStart
           : (start / this.bytesPerSample / this.metadata.sampleRate) * 1000,
       }
-      for (const cb of this.sampleCallbacks) cb(chunk)
+      deliverIqChunk(this.sampleCallbacks, chunk)
       emitted++
       if (realtime) break
       if (emitted >= 8) break
@@ -206,6 +208,6 @@ export class IQFileSource implements IQSource {
       timestamp: Date.now() - this.pacedStart,
       endOfStream: true,
     }
-    for (const cb of this.sampleCallbacks) cb(chunk)
+    deliverIqChunk(this.sampleCallbacks, chunk)
   }
 }

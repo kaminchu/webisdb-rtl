@@ -1,7 +1,9 @@
 /**
  * WebAssembly FFT backend (WASM implementation of `FftBackend`).
  *
- * Drop-in replacement for `TsFftBackend`; see `wasm/dsp/src/fft.rs`.
+ * Uses the reusable `FftPlan` in `wasm/dsp/src/fft.rs`: bit reversal and
+ * per-stage twiddles are cached per transform size, so no per-call `sin`/`cos`
+ * work and f32x4 SIMD on the locked hot path.
  */
 
 import type { FftBackend } from '../backend'
@@ -11,23 +13,31 @@ import { wasm, heap } from './dsp'
 const MAX_FFT = 8192
 
 type Transform = (re: number, im: number, n: number) => void
+type PlanCreate = (n: number) => number
+type PlanTransform = (ptr: number, re: number, im: number) => void
+type PlanDestroy = (ptr: number) => void
+
+function isPowerOfTwo(n: number): boolean {
+  return n > 0 && (n & (n - 1)) === 0
+}
 
 export class WasmFftBackend implements FftBackend {
   readonly name = 'wasm-fft'
   private pRe = 0
   private pIm = 0
   private cap = 0
+  private readonly plans = new Map<number, number>()
 
   constructor() {
     this.ensure(MAX_FFT)
   }
 
   forward(re: Float32Array, im: Float32Array): void {
-    this.run(re, im, 'fft_forward', false)
+    this.run(re, im, false)
   }
 
   inverse(re: Float32Array, im: Float32Array): void {
-    this.run(re, im, 'fft_inverse', true)
+    this.run(re, im, true)
   }
 
   /**
@@ -53,9 +63,30 @@ export class WasmFftBackend implements FftBackend {
     this.ensure(length)
     heap.f32(this.pRe, length).set(srcRe.subarray(srcOffset, srcOffset + length))
     heap.f32(this.pIm, length).set(srcIm.subarray(srcOffset, srcOffset + length))
-    ;(wasm.exports.fft_forward as Transform)(this.pRe, this.pIm, length)
+    this.transform(this.pRe, this.pIm, length, false)
     dstRe.set(heap.f32(this.pRe, length))
     dstIm.set(heap.f32(this.pIm, length))
+  }
+
+  private plan(n: number): number {
+    let ptr = this.plans.get(n)
+    if (ptr !== undefined) return ptr
+    ptr = (wasm.exports.fft_plan_create as PlanCreate)(n)
+    this.plans.set(n, ptr)
+    return ptr
+  }
+
+  private transform(pRe: number, pIm: number, n: number, inverse: boolean): void {
+    const ptr = this.plan(n)
+    if (ptr === 0) {
+      ;(wasm.exports[inverse ? 'fft_inverse' : 'fft_forward'] as Transform)(pRe, pIm, n)
+      return
+    }
+    ;(wasm.exports[inverse ? 'fft_plan_inverse' : 'fft_plan_forward'] as PlanTransform)(
+      ptr,
+      pRe,
+      pIm,
+    )
   }
 
   private ensure(n: number): void {
@@ -70,22 +101,27 @@ export class WasmFftBackend implements FftBackend {
   }
 
   dispose(): void {
+    for (const ptr of this.plans.values()) {
+      ;(wasm.exports.fft_plan_destroy as PlanDestroy)(ptr)
+    }
+    this.plans.clear()
     if (this.cap === 0) return
     wasmFree(wasm, this.pRe, this.cap * 4)
     wasmFree(wasm, this.pIm, this.cap * 4)
     this.cap = 0
   }
 
-  private run(re: Float32Array, im: Float32Array, fn: string, scaled: boolean): void {
+  private run(re: Float32Array, im: Float32Array, inverse: boolean): void {
     const n = re.length
-    if (n <= 1) {
-      if (scaled && n === 1) re[0] *= 1
-      return
-    }
+    if (n <= 1) return
     this.ensure(n)
     heap.f32(this.pRe, n).set(re)
     heap.f32(this.pIm, n).set(im)
-    ;(wasm.exports[fn] as Transform)(this.pRe, this.pIm, n)
+    if (isPowerOfTwo(n)) {
+      this.transform(this.pRe, this.pIm, n, inverse)
+    } else {
+      ;(wasm.exports[inverse ? 'fft_inverse' : 'fft_forward'] as Transform)(this.pRe, this.pIm, n)
+    }
     re.set(heap.f32(this.pRe, n))
     im.set(heap.f32(this.pIm, n))
   }

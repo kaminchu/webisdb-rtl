@@ -238,13 +238,13 @@ pub extern "C" fn viterbi_decode_soft(
 
 pub struct StreamingState {
     rate: u32,
-    metrics: [f64; NUM_STATES],
-    next: [f64; NUM_STATES],
+    metrics: [i32; NUM_STATES],
+    next: [i32; NUM_STATES],
     decisions: [u8; TRACEBACK * NUM_STATES],
-    sign_a: [f64; NUM_STATES],
-    sign_b: [f64; NUM_STATES],
+    sign_a: [i32; NUM_STATES],
+    sign_b: [i32; NUM_STATES],
     position: usize,
-    pair: [f64; 2],
+    pair: [i32; 2],
     pair_len: usize,
     step_count: usize,
     byte: u32,
@@ -255,38 +255,30 @@ impl StreamingState {
     fn new(rate: u32) -> Self {
         let mut state = StreamingState {
             rate,
-            metrics: [0.0; NUM_STATES],
-            next: [0.0; NUM_STATES],
+            metrics: [0; NUM_STATES],
+            next: [0; NUM_STATES],
             decisions: [0u8; TRACEBACK * NUM_STATES],
-            sign_a: [0.0; NUM_STATES],
-            sign_b: [0.0; NUM_STATES],
+            sign_a: [0; NUM_STATES],
+            sign_b: [0; NUM_STATES],
             position: 0,
-            pair: [0.0; 2],
+            pair: [0; 2],
             pair_len: 0,
             step_count: 0,
             byte: 0,
             bits: 0,
         };
         for s in 0..NUM_STATES {
-            state.sign_a[s] = if parity((s as u32) & G1) == 0 {
-                1.0
-            } else {
-                -1.0
-            };
-            state.sign_b[s] = if parity((s as u32) & G2) == 0 {
-                1.0
-            } else {
-                -1.0
-            };
+            state.sign_a[s] = if parity((s as u32) & G1) == 0 { 1 } else { -1 };
+            state.sign_b[s] = if parity((s as u32) & G2) == 0 { 1 } else { -1 };
         }
         state
     }
 
     fn reset(&mut self) {
-        self.metrics = [0.0; NUM_STATES];
+        self.metrics = [0; NUM_STATES];
         self.decisions = [0u8; TRACEBACK * NUM_STATES];
         self.position = 0;
-        self.pair = [0.0; 2];
+        self.pair = [0; 2];
         self.pair_len = 0;
         self.step_count = 0;
         self.byte = 0;
@@ -300,7 +292,7 @@ impl StreamingState {
         loop {
             let keep = pattern[self.position];
             self.position = (self.position + 1) % period;
-            self.pair[self.pair_len] = if keep == 1 { soft as f64 } else { 0.0 };
+            self.pair[self.pair_len] = if keep == 1 { soft } else { 0 };
             self.pair_len += 1;
             if self.pair_len == 2 {
                 let a = self.pair[0];
@@ -317,7 +309,22 @@ impl StreamingState {
         emitted
     }
 
-    fn step(&mut self, a: f64, b: f64) -> Option<u8> {
+    /// Add-compare-select over all states.
+    ///
+    /// Inputs are soft i8 (lengthened to i32) and the branch metric is a signed
+    /// sum, so the whole decoder stays in integers. Normalising the maximum to
+    /// zero after every step bounds the dynamic range well inside i32.
+    fn acs(&mut self, a: i32, b: i32) {
+        #[cfg(target_arch = "wasm32")]
+        unsafe {
+            self.acs_simd(a, b);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.acs_scalar(a, b);
+    }
+
+    #[allow(dead_code)]
+    fn acs_scalar(&mut self, a: i32, b: i32) {
         let slot = (self.step_count % TRACEBACK) * NUM_STATES;
         for state in 0..NUM_STATES {
             let pred = state >> 1;
@@ -332,6 +339,52 @@ impl StreamingState {
                 self.decisions[slot + state] = (pred | 32) as u8;
             }
         }
+    }
+
+    /// f32x4-sized i32x4 ACS. Each 4-state block shares two predecessors, so the
+    /// `[m0,m0,m1,m1]` / `[m32,m32,m33,m33]` vectors are built with a shuffle.
+    #[cfg(target_arch = "wasm32")]
+    unsafe fn acs_simd(&mut self, a: i32, b: i32) {
+        use core::arch::wasm32::*;
+        let slot = (self.step_count % TRACEBACK) * NUM_STATES;
+        let va = i32x4_splat(a);
+        let vb = i32x4_splat(b);
+        let v32 = i32x4_splat(32);
+        // Predecessor indices for states [s, s+1, s+2, s+3] are [m, m, m+1, m+1].
+        let inc = i32x4_shuffle::<0, 1, 4, 5>(i32x4_splat(0), i32x4_splat(1));
+        let mp = self.metrics.as_ptr();
+        let sa = self.sign_a.as_ptr();
+        let sb = self.sign_b.as_ptr();
+        let nxt = self.next.as_mut_ptr();
+        let mut s = 0usize;
+        while s + 4 <= NUM_STATES {
+            let m = s >> 1;
+            let pred_idx = i32x4_add(i32x4_splat(m as i32), inc);
+            let mlo = v128_load(mp.add(m) as *const v128);
+            let pred_lo = i32x4_shuffle::<0, 0, 1, 1>(mlo, mlo);
+            // Shift the load window down by two so the last block stays in bounds;
+            // lanes 2/3 hold metrics[32+m], metrics[32+m+1].
+            let mhi = v128_load(mp.add(m + 30) as *const v128);
+            let pred_hi = i32x4_shuffle::<2, 2, 3, 3>(mhi, mhi);
+            let br = i32x4_add(
+                i32x4_mul(v128_load(sa.add(s) as *const v128), va),
+                i32x4_mul(v128_load(sb.add(s) as *const v128), vb),
+            );
+            let lo = i32x4_add(pred_lo, br);
+            let hi = i32x4_sub(pred_hi, br);
+            let ge = i32x4_ge(lo, hi);
+            let decision = v128_bitselect(pred_idx, i32x4_add(pred_idx, v32), ge);
+            v128_store(nxt.add(s) as *mut v128, i32x4_max(lo, hi));
+            self.decisions[slot + s] = i32x4_extract_lane::<0>(decision) as u8;
+            self.decisions[slot + s + 1] = i32x4_extract_lane::<1>(decision) as u8;
+            self.decisions[slot + s + 2] = i32x4_extract_lane::<2>(decision) as u8;
+            self.decisions[slot + s + 3] = i32x4_extract_lane::<3>(decision) as u8;
+            s += 4;
+        }
+    }
+
+    fn step(&mut self, a: i32, b: i32) -> Option<u8> {
+        self.acs(a, b);
 
         let mut best = 0usize;
         for s in 1..NUM_STATES {
