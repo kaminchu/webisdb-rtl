@@ -110,10 +110,20 @@ export class WasmOneSegDecoder {
     this.ensure(n)
     heap.f32(this.pRe, n).set(re.subarray(0, n))
     heap.f32(this.pIm, n).set(im.subarray(0, n))
+    return this.decodePointers(this.pRe, this.pIm, symbolCount)
+  }
+
+  /**
+   * Decode planes that already live in this WASM instance (for example the
+   * front end's pending buffer), skipping the staging copy.
+   */
+  decodePointers(rePtr: number, imPtr: number, symbolCount: number): Uint8Array {
+    if (symbolCount === 0) return new Uint8Array(0)
+    if (rePtr === 0 || imPtr === 0) throw new Error('decodePointers requires input pointers')
     const len = (wasm.exports.oneseg_decoder_decode_batch as DecodeFn)(
       this.state,
-      this.pRe,
-      this.pIm,
+      rePtr,
+      imPtr,
       symbolCount,
     )
     if (len === 0) return new Uint8Array(0)

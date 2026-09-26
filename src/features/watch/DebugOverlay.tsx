@@ -59,7 +59,7 @@ export function DebugOverlay() {
       </div>
       <div>
         TS {formatRate(throughput.tsBytesPerSecond)} DSP{' '}
-        {(throughput.dspUtilization * 100).toFixed(0)}%
+        {(throughput.dspUtilization * 100).toFixed(0)}% RTF {throughput.realTimeFactor.toFixed(2)}
       </div>
       <div>
         バッファ {(buffer.occupancy * 100).toFixed(0)}% 遅延{' '}

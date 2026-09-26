@@ -26,8 +26,14 @@ export interface ThroughputMetrics {
   tsBytesPerSecond: number
   /** DSP wall-clock utilization (processing time / wall time), 0..1+. */
   dspUtilization: number
-  /** Average DSP processing time per second of input, in ms. */
+  /** Average DSP processing time per second of input signal, in ms. */
   dspProcessingMsPerSecond: number
+  /**
+   * DSP seconds spent per input-signal second (dspProcessingMsPerSecond / 1000).
+   * Below 1 means real-time processing with headroom; at or above 1 the receiver
+   * cannot keep up even though wall utilization may saturate near 100%.
+   */
+  realTimeFactor: number
 }
 
 export interface BufferMetrics {
@@ -70,6 +76,7 @@ export const emptyThroughput: ThroughputMetrics = {
   tsBytesPerSecond: 0,
   dspUtilization: 0,
   dspProcessingMsPerSecond: 0,
+  realTimeFactor: 0,
 }
 
 export const emptyBufferMetrics: BufferMetrics = {

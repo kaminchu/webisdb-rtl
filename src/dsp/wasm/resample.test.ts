@@ -3,6 +3,7 @@ import { ONESEG_SAMPLING_HZ } from '../isdbtParams'
 import { DcRemoval } from '../stages/dcRemoval'
 import { NcoCorrector } from '../stages/frequencyCorrection'
 import { FractionalResampler, U8Decimator } from '../stages/resample'
+import { heap } from './dsp'
 import {
   WasmDcRemoval,
   WasmFractionalResampler,
@@ -284,6 +285,27 @@ describe('WasmU8Decimator', () => {
     } finally {
       a.dispose()
       b.dispose()
+    }
+  })
+
+  it('returns the same samples through the resident pointers', () => {
+    const raw = u8Bytes(6000, 42)
+    const copied = new WasmU8Decimator(2, 0.001)
+    const resident = new WasmU8Decimator(2, 0.001)
+    try {
+      const expected = copied.process(raw)
+      const block = resident.processResident(raw)
+      expect(block.length).toBe(expected.re.length)
+      const re = heap.f32(block.rePtr, block.length)
+      const im = heap.f32(block.imPtr, block.length)
+      for (let i = 0; i < block.length; i++) {
+        expect(re[i]).toBe(expected.re[i])
+        expect(im[i]).toBe(expected.im[i])
+      }
+      expect(resident.processResident(raw.subarray(0, 0)).length).toBe(0)
+    } finally {
+      copied.dispose()
+      resident.dispose()
     }
   })
 })

@@ -34,6 +34,7 @@ import {
   WasmFractionalResampler,
   WasmNcoCorrector,
   WasmU8Decimator,
+  type ResidentBlock,
 } from './wasm/resample'
 
 export type PipelineState = 'idle' | 'acquiring' | 'locked' | 'error'
@@ -320,11 +321,17 @@ export class OneSegPipeline {
 
   /** Feed one raw IQ chunk (U8/I8 interleaved, or F32 complex interleaved). */
   pushIq(chunk: IqChunk): void {
+    const locked = this.state === 'locked' && this.frontend !== null
     if (this.decimator !== null && chunk.format === 'u8') {
       const data = chunk.data
       const u8 = data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>)
-      const rs = this.decimator.process(u8)
-      this.consume(rs.re, rs.im)
+      if (locked) {
+        const block = this.decimator.processResident(u8)
+        if (block.length > 0) this.processLockedPointers(block)
+      } else {
+        const rs = this.decimator.process(u8)
+        this.consume(rs.re, rs.im)
+      }
       this.emitStats()
       return
     }
@@ -357,8 +364,13 @@ export class OneSegPipeline {
     }
 
     this.dc.process(re, im)
-    const rs = this.resampler.process(re, im)
-    this.consume(rs.re, rs.im)
+    if (locked) {
+      const block = this.resampler.processResident(re, im)
+      if (block.length > 0) this.processLockedPointers(block)
+    } else {
+      const rs = this.resampler.process(re, im)
+      this.consume(rs.re, rs.im)
+    }
     this.emitStats()
   }
 
@@ -651,6 +663,20 @@ export class OneSegPipeline {
     this.drainFrontend()
   }
 
+  /**
+   * Feed a block produced by an upstream WASM kernel straight into the front
+   * end. The block only lives until the next kernel call, so it is consumed and
+   * decoded synchronously.
+   */
+  private processLockedPointers(block: ResidentBlock): void {
+    const frontend = this.frontend
+    if (!frontend) return
+    frontend.pushPointers(block.rePtr, block.imPtr, block.length)
+    this.applyFrontendStats()
+    this.drainFrontend()
+    this.checkLockLoss()
+  }
+
   /** Pull sync quality, MER and TMCC updates out of the fused front end. */
   private applyFrontendStats(): void {
     const frontend = this.frontend
@@ -678,8 +704,8 @@ export class OneSegPipeline {
       frontend.clearPending()
       return
     }
-    this.oneSeg.prepareDecode(count)
-    const out = this.oneSeg.decodeContiguous(frontend.pendingRe(), frontend.pendingIm(), count)
+    const { rePtr, imPtr } = frontend.pendingPointers()
+    const out = this.oneSeg.decodeResident(rePtr, imPtr, count)
     frontend.clearPending()
     if (out.length > 0) {
       this.tsBytes += out.length

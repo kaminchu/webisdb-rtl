@@ -158,6 +158,14 @@ export class WasmFrontend {
     return (wasm.exports.frontend_push as PushFn)(this.state, this.pInRe, this.pInIm, len)
   }
 
+  /**
+   * Append samples that already live in this WASM instance (for example the
+   * decimator or resampler output) without staging them through the host.
+   */
+  pushPointers(rePtr: number, imPtr: number, len: number): number {
+    return (wasm.exports.frontend_push as PushFn)(this.state, rePtr, imPtr, len)
+  }
+
   pendingCount(): number {
     return (wasm.exports.frontend_pending_count as CountFn)(this.state)
   }
@@ -170,6 +178,17 @@ export class WasmFrontend {
   pendingIm(): Float32Array {
     const ptr = (wasm.exports.frontend_pending_im as PtrFn)(this.state)
     return heap.f32(ptr, this.pendingCount() * this.dataCount)
+  }
+
+  /**
+   * Location of the pending equalized planes in WASM. `length` counts complex
+   * values (`symbolCount * dataCount`). Valid until the next push/clear/reset.
+   */
+  pendingPointers(): { rePtr: number; imPtr: number; length: number } {
+    const count = this.pendingCount()
+    const rePtr = (wasm.exports.frontend_pending_re as PtrFn)(this.state)
+    const imPtr = (wasm.exports.frontend_pending_im as PtrFn)(this.state)
+    return { rePtr, imPtr, length: count * this.dataCount }
   }
 
   clearPending(): void {

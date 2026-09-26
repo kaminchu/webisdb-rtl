@@ -103,4 +103,13 @@ export class OneSegDecoder {
   decodeContiguous(re: Float32Array, im: Float32Array, symbolCount: number): Uint8Array {
     return this.decoder.decode(re, im, symbolCount)
   }
+
+  /**
+   * Decode planes that already live in WASM memory (for example the front end's
+   * pending buffer), avoiding the host staging copy. Pointers must belong to the
+   * same WASM instance and stay valid for the duration of the call.
+   */
+  decodeResident(rePtr: number, imPtr: number, symbolCount: number): Uint8Array {
+    return this.decoder.decodePointers(rePtr, imPtr, symbolCount)
+  }
 }

@@ -18,6 +18,17 @@ type PtrFn = (ptr: number) => void
 type OutPtrFn = (ptr: number) => number
 type SetOffsetFn = (ptr: number, offset: number) => void
 
+/**
+ * A borrowed view of a block that stays in WASM memory. Pointers are only valid
+ * until the owning kernel is called again or disposed and must never cross an
+ * instance or worker boundary.
+ */
+export interface ResidentBlock {
+  rePtr: number
+  imPtr: number
+  length: number
+}
+
 /** Shared per-instance scratch buffers for staging input in wasm memory. */
 class Scratch {
   private pRe = 0
@@ -121,19 +132,34 @@ export class WasmU8Decimator {
     this.ptr = (wasm.exports.u8_decim_create as (f: number, a: number) => number)(factor, alpha)
   }
 
-  process(data: Uint8Array): { re: Float32Array; im: Float32Array } {
+  private run(data: Uint8Array): number {
     if (data.length > this.inCap) {
       if (this.inPtr !== 0) wasmFree(wasm, this.inPtr, this.inCap)
       this.inPtr = wasmAlloc(wasm, data.length)
       this.inCap = data.length
     }
     if (data.length > 0) heap.u8(this.inPtr, data.length).set(data)
-    const n = this.processFn(this.ptr, this.inPtr, data.length)
+    return this.processFn(this.ptr, this.inPtr, data.length)
+  }
+
+  process(data: Uint8Array): { re: Float32Array; im: Float32Array } {
+    const n = this.run(data)
     if (n === 0) return { re: new Float32Array(0), im: new Float32Array(0) }
     return {
       re: heap.f32(this.outReFn(this.ptr), n).slice(),
       im: heap.f32(this.outImFn(this.ptr), n).slice(),
     }
+  }
+
+  /**
+   * Run the kernel but leave the result in WASM and return its location. Valid
+   * only until the next process/reset/dispose, and only for consumers in the
+   * same WASM instance.
+   */
+  processResident(data: Uint8Array): ResidentBlock {
+    const n = this.run(data)
+    if (n === 0) return { rePtr: 0, imPtr: 0, length: 0 }
+    return { rePtr: this.outReFn(this.ptr), imPtr: this.outImFn(this.ptr), length: n }
   }
 
   reset(): void {
@@ -178,6 +204,14 @@ export class WasmFractionalResampler {
     const reOut = heap.f32(this.outReFn(this.ptr), n).slice()
     const imOut = heap.f32(this.outImFn(this.ptr), n).slice()
     return { re: reOut, im: imOut }
+  }
+
+  /** Like `process` but leaves the output in WASM; see `ResidentBlock`. */
+  processResident(re: Float32Array, im: Float32Array): ResidentBlock {
+    if (re.length > 0) this.scratch.write(re, im)
+    const n = this.processFn(this.ptr, this.scratch.rePtr, this.scratch.imPtr, re.length)
+    if (n === 0) return { rePtr: 0, imPtr: 0, length: 0 }
+    return { rePtr: this.outReFn(this.ptr), imPtr: this.outImFn(this.ptr), length: n }
   }
 
   dispose(): void {

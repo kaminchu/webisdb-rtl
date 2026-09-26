@@ -43,6 +43,10 @@ class RateMeter {
     this.windowTotal = 0
     return rate
   }
+
+  get totalValue(): number {
+    return this.total
+  }
 }
 
 let pipeline: OneSegPipeline | null = null
@@ -50,6 +54,7 @@ let fileSource: IQFileSource | null = null
 let spectrumEnabled = false
 let lastSpectrumAt = 0
 let inputSamples = 0
+let inputSignalSeconds = 0
 let lastStatsAt = performance.now()
 let uptimeStart = performance.now()
 
@@ -74,14 +79,17 @@ function buildStats(now: number): ReceiverStats {
   const inputSps = inputRate.peek()
   const elapsed = Math.max(0.001, (now - lastStatsAt) / 1000)
   const quality = lastStats?.quality ?? emptyReceptionQuality
+  const processingMsPerInputSecond =
+    inputSignalSeconds > 0 ? dspMs.totalValue / inputSignalSeconds : 0
   return {
     quality,
     throughput: {
       ...emptyThroughput,
       iqSamplesPerSecond: inputSps,
       tsBytesPerSecond: tsRate.peek(),
-      dspUtilization: inputSps > 0 ? Math.min(2, dspMs.peek() / 1000) : 0,
-      dspProcessingMsPerSecond: dspMs.peek(),
+      dspUtilization: inputSignalSeconds > 0 ? Math.min(2, dspMs.peek() / 1000) : 0,
+      dspProcessingMsPerSecond: processingMsPerInputSecond,
+      realTimeFactor: processingMsPerInputSecond / 1000,
     },
     buffer: {
       ...emptyBufferMetrics,
@@ -129,8 +137,9 @@ function ensurePipeline(options?: { sampleRate?: number }): OneSegPipeline {
     {
       onTs: (bytes) => {
         tsRate.add(bytes.length)
-        const copy = bytes.slice()
-        post({ type: 'ts', data: copy }, [copy.buffer])
+        // `bytes` is a freshly allocated copy of the WASM output, so its whole
+        // buffer can be transferred without an extra defensive slice.
+        post({ type: 'ts', data: bytes }, [bytes.buffer])
       },
       onTmcc: (info) => post({ type: 'tmcc', tmcc: info }),
       onStats: (stats) => {
@@ -168,6 +177,7 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
   dspMs.tick()
   lastStats = null
   inputSamples = 0
+  inputSignalSeconds = 0
   uptimeStart = performance.now()
   lastStatsAt = performance.now()
   ensurePipeline({ sampleRate: options.sampleRate })
@@ -184,10 +194,14 @@ function handleInit(command: Extract<ReceiverCommand, { type: 'init' }>): void {
         pipeline?.flush()
         return
       }
-      inputSamples += Math.floor(chunk.data.length / 2)
-      inputRate.add(Math.floor(chunk.data.length / 2))
+      const samples = Math.floor(chunk.data.length / 2)
+      inputSamples += samples
+      inputSignalSeconds += chunk.sampleRate > 0 ? samples / chunk.sampleRate : 0
+      inputRate.add(samples)
       maybeEmitSpectrum(chunk, performance.now())
+      const t0 = performance.now()
       pipeline?.pushIq(chunk)
+      dspMs.add(performance.now() - t0)
     })
   }
 }
@@ -212,8 +226,10 @@ const handlers: {
       sequence: c.sequence,
       timestamp: c.timestamp,
     }
-    inputSamples += Math.floor(data.length / 2)
-    inputRate.add(Math.floor(data.length / 2))
+    const samples = Math.floor(data.length / 2)
+    inputSamples += samples
+    inputSignalSeconds += c.sampleRate > 0 ? samples / c.sampleRate : 0
+    inputRate.add(samples)
     maybeEmitSpectrum(chunk, performance.now())
     const t0 = performance.now()
     try {
