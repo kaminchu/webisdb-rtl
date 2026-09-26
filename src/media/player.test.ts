@@ -59,7 +59,7 @@ describe('OneSegPlayer jitter buffer', () => {
     vi.useRealTimers()
   })
 
-  it('decodes ahead of the buffered presentation time', () => {
+  it('waits for actual media beyond the stall window, then decodes ahead without extra delay', () => {
     vi.useFakeTimers()
     let now = 0
     const player = new OneSegPlayer(document.createElement('canvas'), {
@@ -71,34 +71,46 @@ describe('OneSegPlayer jitter buffer', () => {
     expect(player.stats.videoSamples).toBe(0)
     expect(player.stats.bufferedPes).toBe(1)
 
-    now = 1.999
-    vi.advanceTimersByTime(1_999)
+    now = 10
+    vi.advanceTimersByTime(10_000)
+    player.pushPes(packet('video', 180_000))
+    player.pushPes(packet('caption', 900_000))
+    player.pushPes(packet('audio'))
     expect(player.stats.videoSamples).toBe(0)
-
-    now = 2
-    vi.advanceTimersByTime(100)
-    expect(player.stats.videoSamples).toBe(1)
-    expect(player.stats.bufferedPes).toBe(0)
+    player.pushPes(packet('video', 270_000))
+    expect(player.stats.videoSamples).toBe(0)
+    player.pushPes(packet('video', 360_000))
+    expect(player.stats.videoSamples).toBe(2)
+    const sync = (player as unknown as { avSync: { now(): number } }).avSync
+    expect(sync.now()).toBe(1)
     player.close()
   })
 
-  it('absorbs arrival jitter using PTS rather than delaying every arrival', () => {
+  it('requires a fresh full buffer after exhaustion even when a resumed burst advances PTS', () => {
     vi.useFakeTimers()
     let now = 0
     const player = new OneSegPlayer(document.createElement('canvas'), {
-      bufferSec: 3,
+      bufferSec: 1,
       clock: () => now,
     })
     player.pushPes(packet('video', 90_000))
-    now = 2.8
-    vi.advanceTimersByTime(2_800)
-    player.pushPes(packet('video', 135_000))
+    player.pushPes(packet('video', 180_000))
     expect(player.stats.videoSamples).toBe(2)
-    expect(player.stats.bufferedPes).toBe(0)
+    now = 3
+    player.pushPes(packet('video', 270_000))
+    player.pushPes(packet('video', 315_000))
+    expect(player.stats.videoSamples).toBe(2)
+    player.pushPes(packet('video', 360_000))
+    expect(player.stats.videoSamples).toBe(5)
+    now = 6
+    vi.advanceTimersByTime(3_000)
+    expect(vi.getTimerCount()).toBe(0)
+    player.pushPes(packet('video', 405_000))
+    expect(player.stats.videoSamples).toBe(5)
     player.close()
   })
 
-  it('re-anchors immediately when the PTS jumps past the buffering window', () => {
+  it('requires the configured span after a PTS jump and explicit recovery', () => {
     const player = new OneSegPlayer(document.createElement('canvas'), {
       bufferSec: 3,
       clock: () => 0,
@@ -106,7 +118,12 @@ describe('OneSegPlayer jitter buffer', () => {
     player.pushPes(packet('video', 90_000))
     player.pushPes(packet('video', 900_000))
     const avSync = (player as unknown as { avSync: { anchoredPtsSec: number | null } }).avSync
-    expect(avSync.anchoredPtsSec).toBeCloseTo(10)
+    expect(avSync.anchoredPtsSec).toBeNull()
+    for (const pts of [990_000, 1_080_000, 1_170_000]) player.pushPes(packet('video', pts))
+    expect(avSync.anchoredPtsSec).toBe(10)
+    player.recover()
+    player.pushPes(packet('video', 1_260_000))
+    expect(avSync.anchoredPtsSec).toBeNull()
     player.close()
   })
 
@@ -120,6 +137,33 @@ describe('OneSegPlayer jitter buffer', () => {
     expect(player.stats.bufferedPes).toBe(1)
     player.reset()
     expect(player.stats.bufferedPes).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    player.close()
+  })
+
+  it('uses only retained timestamps when the bounded buffer evicts media', () => {
+    const player = new OneSegPlayer(document.createElement('canvas'), { bufferSec: 1 })
+    player.pushPes(packet('video', 90_000))
+    for (let i = 0; i < 1024; i++) player.pushPes(packet('caption', 90_000))
+    player.pushPes(packet('video', 180_000))
+    expect(player.stats.bufferedPes).toBe(1024)
+    expect(player.stats.videoSamples).toBe(0)
+    player.pushPes(packet('video', 270_000))
+    expect(player.stats.videoSamples).toBe(2)
+    player.close()
+  })
+
+  it('keeps zero-buffer startup and recovery immediate', () => {
+    let now = 0
+    const player = new OneSegPlayer(document.createElement('canvas'), { clock: () => now })
+    player.pushPes(packet('audio', 90_000))
+    expect(player.stats.audioSamples).toBe(1)
+    now = 5
+    player.pushPes(packet('audio', 180_000))
+    expect(player.stats.audioSamples).toBe(2)
+    player.recover()
+    player.pushPes(packet('audio', 270_000))
+    expect(player.stats.audioSamples).toBe(3)
     player.close()
   })
 
@@ -192,14 +236,16 @@ describe('OneSegPlayer without WebCodecs', () => {
   })
 })
 
-function setup(bufferSec = 0) {
+function setup(bufferSec = 0, initialPts: number | null = 90_000) {
   let output!: (frame: VideoFrame) => void
+  let error!: (error: DOMException) => void
   vi.stubGlobal(
     'VideoDecoder',
     class {
       state = 'configured'
       constructor(init: VideoDecoderInit) {
         output = init.output
+        error = init.error
       }
       configure() {}
       close() {}
@@ -226,7 +272,7 @@ function setup(bufferSec = 0) {
   } as unknown as CanvasRenderingContext2D)
   let now = 0
   const player = new OneSegPlayer(canvas, { clock: () => now, bufferSec })
-  player.pushPes(packet('video', 90_000))
+  player.pushPes(packet('video', initialPts ?? undefined))
   const frames = Array.from(
     { length: 15 },
     (_, i) =>
@@ -243,6 +289,8 @@ function setup(bufferSec = 0) {
     fillText,
     frames,
     cancel,
+    getOutput: () => output,
+    fail: () => error(new DOMException('Rejected codec', 'NotSupportedError')),
     emit: (frame: VideoFrame) => output(frame),
     tick: (time: number) => {
       now = time
@@ -254,7 +302,68 @@ function setup(bufferSec = 0) {
 }
 
 describe('OneSegPlayer frame presentation', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('anchors decoded untimestamped video immediately with zero buffering, including after recovery', () => {
+    const { player, frames, emit, draw, tick } = setup(0, null)
+    emit(frames[0])
+    tick(0.001)
+    expect(draw).toHaveBeenLastCalledWith(frames[0], 0, 0, 320, 180)
+    player.recover()
+    player.pushPes(packet('video'))
+    emit(frames[1])
+    tick(0.002)
+    expect(draw).toHaveBeenCalledTimes(2)
+    expect(draw).toHaveBeenLastCalledWith(frames[1], 0, 0, 320, 180)
+    player.reset()
+    player.pushPes(packet('video'))
+    emit(frames[2])
+    tick(0.003)
+    expect(draw).toHaveBeenCalledTimes(3)
+    player.close()
+  })
+
+  it('defers decoder error recovery, clears frames, and waits for a fresh span without retry loops', () => {
+    vi.useFakeTimers()
+    const { player, frames, emit, fail, getOutput } = setup(1)
+    player.pushPes(packet('video', 180_000))
+    const staleOutput = getOutput()
+    emit(frames[0])
+    const recover = vi.spyOn(player, 'recover')
+    fail()
+    expect(recover).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(0)
+    expect(recover).toHaveBeenCalledTimes(1)
+    expect(frames[0].close).toHaveBeenCalledTimes(1)
+    player.pushPes(packet('video', 270_000))
+    expect(player.stats.videoSamples).toBe(2)
+    vi.advanceTimersByTime(10_000)
+    expect(recover).toHaveBeenCalledTimes(1)
+    player.pushPes(packet('video', 360_000))
+    expect(player.stats.videoSamples).toBe(4)
+    staleOutput(frames[1])
+    expect(frames[1].close).toHaveBeenCalledTimes(1)
+    player.close()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('discards stale decoder output after reset and close', () => {
+    const { player, frames, getOutput, draw, tick } = setup()
+    const staleOutput = getOutput()
+    player.reset()
+    player.pushPes(packet('video', 90_000))
+    staleOutput(frames[0])
+    const output = getOutput()
+    player.close()
+    output(frames[1])
+    tick(0.01)
+    expect(draw).not.toHaveBeenCalled()
+    expect(frames[0].close).toHaveBeenCalledTimes(1)
+    expect(frames[1].close).toHaveBeenCalledTimes(1)
+  })
 
   it.each([900_000, 2 ** 33 - 9_000])(
     'resumes rendering after the PTS moves backwards from %i',
@@ -295,6 +404,9 @@ describe('OneSegPlayer frame presentation', () => {
     expect(player.stats.bufferedPes).toBeGreaterThan(0)
     tick(6)
     player.pushPes(packet('video', 360_000))
+    expect(recover).not.toHaveBeenCalled()
+    tick(9)
+    player.pushPes(packet('video', 450_000))
     expect(recover).toHaveBeenCalledTimes(1)
     player.close()
   })
@@ -344,12 +456,15 @@ describe('OneSegPlayer frame presentation', () => {
     player.close()
   })
 
-  it('holds decoded frames until the configured presentation delay has elapsed', () => {
+  it('rejects frames while buffering and presents immediately once enough media is retained', () => {
     const { player, draw, frames, emit, tick } = setup(3)
     player.configureVideo({ codec: 'avc1.42E01E' })
-    frames.forEach(emit)
+    emit(frames[1])
     tick(2.99)
     expect(draw).not.toHaveBeenCalled()
+    expect(frames[1].close).toHaveBeenCalledTimes(1)
+    for (const pts of [180_000, 270_000, 360_000]) player.pushPes(packet('video', pts))
+    emit(frames[0])
     tick(3.001)
     expect(draw).toHaveBeenCalledTimes(1)
     expect(draw.mock.lastCall?.[0]).toBe(frames[0])

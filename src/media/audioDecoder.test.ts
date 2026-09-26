@@ -17,10 +17,13 @@ describe('audio codec handling', () => {
 
 function setup(playbackTime?: () => number) {
   let output!: (data: AudioData) => void
+  const callbacks: AudioDecoderInit[] = []
+  const onError = vi.fn()
   vi.stubGlobal(
     'AudioDecoder',
     class {
       constructor(init: AudioDecoderInit) {
+        callbacks.push(init)
         output = init.output
       }
       configure() {}
@@ -54,6 +57,7 @@ function setup(playbackTime?: () => number) {
   const decoder = new AudioStreamDecoder({
     audioContext: context as unknown as AudioContext,
     playbackTime,
+    onError,
   })
   decoder.configure({ codec: 'mp4a.40.2', sampleRate: 24_000, numberOfChannels: 1 })
   const emit = (timestamp: number, sampleRate = 24_000) => {
@@ -68,11 +72,36 @@ function setup(playbackTime?: () => number) {
     } as unknown as AudioData)
     expect(close).toHaveBeenCalledTimes(1)
   }
-  return { decoder, context, sources, emit }
+  return { decoder, context, sources, emit, callbacks, onError }
 }
 
 describe('audio scheduling', () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it('discards stale output and errors after reset and close', () => {
+    const { decoder, sources, emit, callbacks, onError } = setup()
+    const stale = callbacks[0]
+    decoder.reset()
+    const current = callbacks[1]
+    const data = { close: vi.fn() } as unknown as AudioData
+    stale.output(data)
+    stale.error(new DOMException('Stale rejection', 'NotSupportedError'))
+    expect(data.close).toHaveBeenCalledTimes(1)
+    expect(sources).toHaveLength(0)
+    expect(decoder.anchored).toBe(false)
+    expect(callbacks).toHaveLength(2)
+    expect(onError).not.toHaveBeenCalled()
+    emit(0)
+    expect(sources).toHaveLength(1)
+    decoder.close()
+    current.output(data)
+    current.error(new DOMException('Stale failure', 'EncodingError'))
+    expect(data.close).toHaveBeenCalledTimes(2)
+    expect(sources).toHaveLength(1)
+    expect(callbacks).toHaveLength(2)
+    expect(onError).not.toHaveBeenCalled()
+    expect(decoder.anchored).toBe(false)
+  })
 
   it('uses the shared buffered PTS timeline for the first audio buffer', () => {
     const { decoder, sources, emit } = setup(() => 9.5)

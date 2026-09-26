@@ -85,6 +85,31 @@ describe('isKeyframe', () => {
 describe('VideoStreamDecoder', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('ignores stale error callbacks after reset and close', () => {
+    const callbacks: VideoDecoderInit[] = []
+    vi.stubGlobal(
+      'VideoDecoder',
+      class {
+        constructor(init: VideoDecoderInit) {
+          callbacks.push(init)
+        }
+        configure() {}
+        close() {}
+      },
+    )
+    const onError = vi.fn()
+    const decoder = new VideoStreamDecoder({ onFrame: vi.fn(), onError })
+    decoder.configure({ codec: 'avc1.42E01E' })
+    decoder.reset()
+    callbacks[0].error(new DOMException('Stale rejection', 'NotSupportedError'))
+    decoder.reset()
+    expect(callbacks).toHaveLength(3)
+    decoder.close()
+    callbacks[2].error(new DOMException('Stale failure', 'EncodingError'))
+    expect(callbacks).toHaveLength(3)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('stops recreating once the browser rejects the codec configuration', async () => {
     let configureCount = 0
     vi.stubGlobal(

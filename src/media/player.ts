@@ -17,7 +17,7 @@ export interface OneSegPlayerOptions {
   onError?: (error: Error) => void
   /** A/V sync render window in seconds. */
   toleranceSec?: number
-  /** Playback delay in seconds, used to absorb packet arrival jitter. */
+  /** Media span to accumulate before starting or restarting playback. */
   bufferSec?: number
   /** Wall clock in seconds; overridable for tests. */
   clock?: () => number
@@ -46,6 +46,8 @@ const CAPTURE_FPS = 30
 const STALL_CHECK_SEC = 2.5
 // Large PTS steps in either direction include dropouts and the 33-bit PTS wrap.
 const MAX_PTS_JUMP_SEC = 2
+// PES can contain several frames; allow a full second beyond the last PES start.
+const STARVATION_ALLOWANCE_SEC = 1
 
 interface BufferedPes {
   packet: PesPacket
@@ -86,6 +88,10 @@ export class OneSegPlayer {
   private readonly now: () => number
   private readonly pesQueue: BufferedPes[] = []
   private queueTimer: ReturnType<typeof setTimeout> | null = null
+  private errorTimer: ReturnType<typeof setTimeout> | null = null
+  private buffering = true
+  private closed = false
+  private latestMediaPtsSec: number | null = null
   private readonly pending: VideoFrame[] = []
   private drainHandle: number | ReturnType<typeof setTimeout> | null = null
   private drainUsesAnimationFrame = false
@@ -122,11 +128,11 @@ export class OneSegPlayer {
 
     this.videoDecoder = new VideoStreamDecoder({
       onFrame: (frame) => this.onVideoFrame(frame),
-      onError: options.onError,
+      onError: (error) => this.onDecoderError(error, options.onError),
     })
     this.audioDecoder = new AudioStreamDecoder({
       ...(options.audioContext ? { audioContext: options.audioContext } : {}),
-      onError: options.onError,
+      onError: (error) => this.onDecoderError(error, options.onError),
       playbackTime: () => this.avSync.now(),
       maxQueueSec: DECODE_AHEAD_SEC + 1,
       onBufferQueued: () => {
@@ -166,22 +172,18 @@ export class OneSegPlayer {
   }
 
   pushPes(packet: PesPacket): void {
+    if (this.closed) return
+    if (this.errorTimer !== null) this.recover()
+    this.checkStarvation()
+    if (packet.kind === 'video') this.incomingVideoSamples++
+    this.checkStall()
     if (packet.pts !== undefined && (packet.kind === 'video' || packet.kind === 'audio')) {
       const previous = this.lastIncomingPtsSec[packet.kind]
       if (previous !== undefined && Math.abs(packet.pts / 90_000 - previous) > MAX_PTS_JUMP_SEC) {
         this.recover()
-        this.avSync.anchor(packet.pts, 0)
       }
       this.lastIncomingPtsSec[packet.kind] = packet.pts / 90_000
-    }
-    if (packet.kind === 'video') this.incomingVideoSamples++
-    this.checkStall()
-    if (
-      !this.avSync.anchored &&
-      packet.pts !== undefined &&
-      (packet.kind === 'video' || packet.kind === 'audio')
-    ) {
-      this.avSync.anchor(packet.pts, this.bufferSec)
+      this.latestMediaPtsSec = Math.max(this.latestMediaPtsSec ?? -Infinity, packet.pts / 90_000)
     }
     const ptsSec = packet.pts !== undefined ? packet.pts / 90_000 : this.avSync.now()
     this.pesQueue.push({ packet, ptsSec })
@@ -202,9 +204,10 @@ export class OneSegPlayer {
    * PTS discontinuities without tearing down the configured codecs.
    */
   private checkStall(): void {
+    if (this.buffering) return
     const now = this.now()
     if (this.stallCheckAt === null) {
-      this.stallCheckAt = now + this.bufferSec
+      this.stallCheckAt = now
       this.stallFrames = this.counters.videoFramesDecoded
       this.stallVideoSamples = this.incomingVideoSamples
       return
@@ -220,6 +223,10 @@ export class OneSegPlayer {
 
   /** Re-key decoders and reset the sync clock while keeping codec config. */
   recover(): void {
+    this.buffering = true
+    this.latestMediaPtsSec = null
+    if (this.errorTimer !== null) clearTimeout(this.errorTimer)
+    this.errorTimer = null
     this.clearQueue()
     this.adts.reset()
     this.pendingVideo = null
@@ -229,6 +236,46 @@ export class OneSegPlayer {
     this.videoDecoder.reset()
     this.audioDecoder.reset()
     this.clearPending()
+  }
+
+  private onDecoderError(error: Error, report?: (error: Error) => void): void {
+    // Wrappers finish rejecting/recreating their codec before player-wide recovery.
+    // Errors during recovery or initial configuration must not schedule retry loops.
+    if (!this.closed && !this.buffering && this.errorTimer === null) {
+      this.errorTimer = setTimeout(() => {
+        this.errorTimer = null
+        this.recover()
+      }, 0)
+    }
+    report?.(error)
+  }
+
+  private checkStarvation(): void {
+    if (
+      !this.buffering &&
+      this.latestMediaPtsSec !== null &&
+      this.avSync.now() > this.latestMediaPtsSec + STARVATION_ALLOWANCE_SEC
+    ) {
+      this.recover()
+    }
+  }
+
+  private startBufferedPlayback(): boolean {
+    let earliest = Infinity
+    let latest = -Infinity
+    for (const { packet } of this.pesQueue) {
+      if (packet.pts === undefined || (packet.kind !== 'audio' && packet.kind !== 'video')) continue
+      earliest = Math.min(earliest, packet.pts / 90_000)
+      latest = Math.max(latest, packet.pts / 90_000)
+    }
+    if (this.bufferSec > 0 && latest - earliest < this.bufferSec) return false
+    if (Number.isFinite(earliest)) {
+      this.avSync.anchor(earliest * 90_000, 0)
+      this.latestMediaPtsSec = latest
+    }
+    this.buffering = false
+    this.checkStall()
+    return true
   }
 
   private routePes(packet: PesPacket): void {
@@ -286,12 +333,19 @@ export class OneSegPlayer {
   }
 
   private scheduleQueueDrain(): void {
-    if (this.queueTimer !== null) return
+    if (this.queueTimer !== null || this.buffering || this.closed) return
     const oldest = this.pesQueue[0]
-    if (!oldest) return
+    if (!oldest && this.latestMediaPtsSec === null) return
     const waitMs = Math.max(
-      1,
-      Math.min(100, (oldest.ptsSec - DECODE_AHEAD_SEC - this.avSync.now()) * 1000),
+      10,
+      Math.min(
+        250,
+        ((oldest
+          ? oldest.ptsSec - DECODE_AHEAD_SEC
+          : this.latestMediaPtsSec! + STARVATION_ALLOWANCE_SEC) -
+          this.avSync.now()) *
+          1000,
+      ),
     )
     this.queueTimer = setTimeout(() => {
       this.queueTimer = null
@@ -300,12 +354,16 @@ export class OneSegPlayer {
   }
 
   private drainQueue(): void {
+    if (this.closed || this.errorTimer !== null) return
+    this.checkStarvation()
+    if ((this.buffering || !this.avSync.anchored) && !this.startBufferedPlayback()) return
     const cutoff = this.avSync.now() + DECODE_AHEAD_SEC
     while (this.pesQueue.length > 0 && this.pesQueue[0].ptsSec <= cutoff) {
       const entry = this.pesQueue.shift()
       if (entry) this.routePes(entry.packet)
+      if (this.errorTimer !== null) return
     }
-    if (this.pesQueue.length > 0) this.scheduleQueueDrain()
+    this.scheduleQueueDrain()
   }
 
   private clearQueue(): void {
@@ -336,22 +394,18 @@ export class OneSegPlayer {
 
   /** Flush decoders and the sync clock; used for LIVE recovery. */
   reset(): void {
-    this.lastIncomingPtsSec = {}
-    this.stallCheckAt = null
-    this.clearQueue()
-    this.adts.reset()
-    this.pendingVideo = null
+    this.recover()
     this.videoConfig = null
     this.avcDescriptionConfigured = false
     this.avcParameterSets.reset()
-    this.avSync.reset()
-    this.videoDecoder.reset()
-    this.audioDecoder.reset()
     this.captions.clear()
-    this.clearPending()
   }
 
   close(): void {
+    this.closed = true
+    this.buffering = true
+    if (this.errorTimer !== null) clearTimeout(this.errorTimer)
+    this.errorTimer = null
     this.clearQueue()
     this.clearPending()
     this.videoDecoder.close()
@@ -359,8 +413,11 @@ export class OneSegPlayer {
   }
 
   private onVideoFrame(frame: VideoFrame): void {
-    const pts90k = microsToPts90k(frame.timestamp)
-    if (!this.avSync.anchored) this.avSync.anchor(pts90k)
+    if (this.closed || this.buffering || this.errorTimer !== null) {
+      frame.close()
+      return
+    }
+    if (!this.avSync.anchored) this.avSync.anchor(microsToPts90k(frame.timestamp))
     this.pending.push(frame)
     this.pending.sort((a, b) => a.timestamp - b.timestamp)
     if (this.pending.length > MAX_PENDING_FRAMES) {

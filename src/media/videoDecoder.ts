@@ -131,6 +131,7 @@ export class VideoStreamDecoder {
   private configRejected = false
   private avcc = false
   private needsKey = true
+  private generation = 0
 
   constructor(options: VideoStreamDecoderOptions) {
     this.onFrame = options.onFrame
@@ -189,10 +190,16 @@ export class VideoStreamDecoder {
   private recreate(): boolean {
     this.closeDecoder()
     if (!this.supported || !this.config || this.configRejected) return false
+    const generation = this.generation
     try {
       this.decoder = new VideoDecoder({
-        output: (frame) => this.emitFrame(frame),
-        error: (error) => this.handleError(error),
+        output: (frame) => {
+          if (generation !== this.generation) frame.close()
+          else this.emitFrame(frame)
+        },
+        error: (error) => {
+          if (generation === this.generation) this.handleError(error)
+        },
       })
       this.decoder.configure(this.config)
       return true
@@ -232,6 +239,7 @@ export class VideoStreamDecoder {
   }
 
   private closeDecoder(): void {
+    this.generation++
     const decoder = this.decoder
     this.decoder = null
     if (!decoder) return

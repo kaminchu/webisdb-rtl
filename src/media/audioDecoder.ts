@@ -61,6 +61,7 @@ export class AudioStreamDecoder {
   private decoder: AudioDecoder | null = null
   private config: AudioDecoderConfig | null = null
   private configRejected = false
+  private generation = 0
   private baseContextTime: number | null = null
   private basePtsSec: number | null = null
   private scheduledUntil = 0
@@ -175,10 +176,16 @@ export class AudioStreamDecoder {
   private recreate(): boolean {
     this.closeDecoder()
     if (!this.supported || !this.config || this.configRejected) return false
+    const generation = this.generation
     try {
       this.decoder = new AudioDecoder({
-        output: (data) => this.onAudioData(data),
-        error: (error) => this.handleError(error),
+        output: (data) => {
+          if (generation !== this.generation) data.close()
+          else this.onAudioData(data)
+        },
+        error: (error) => {
+          if (generation === this.generation) this.handleError(error)
+        },
       })
       this.decoder.configure(this.config)
       return true
@@ -315,6 +322,7 @@ export class AudioStreamDecoder {
   }
 
   private closeDecoder(): void {
+    this.generation++
     const decoder = this.decoder
     this.decoder = null
     if (!decoder) return
