@@ -195,8 +195,8 @@ fn demap_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let h = channel_at(d, spPhase, fftBase);
     let den = h.x * h.x + h.y * h.y;
     let inv = select(0.0, 1.0 / den, den > 1e-12);
-    out[(outBase + k) * 2u] = (y.x * h.x + y.y * h.y) * inv;
-    out[(outBase + k) * 2u + 1u] = (y.y * h.x - y.x * h.y) * inv;
+    out[outBase + k] = (y.x * h.x + y.y * h.y) * inv;
+    out[params.count * params.dc + outBase + k] = (y.y * h.x - y.x * h.y) * inv;
   }
 }
 `

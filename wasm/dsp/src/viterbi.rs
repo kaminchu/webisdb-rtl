@@ -240,7 +240,7 @@ pub struct StreamingState {
     rate: u32,
     metrics: [i32; NUM_STATES],
     next: [i32; NUM_STATES],
-    decisions: [u8; TRACEBACK * NUM_STATES],
+    decisions: [u64; TRACEBACK],
     survivor: [u8; TRACEBACK],
     sign_a: [i32; NUM_STATES],
     sign_b: [i32; NUM_STATES],
@@ -258,7 +258,7 @@ impl StreamingState {
             rate,
             metrics: [0; NUM_STATES],
             next: [0; NUM_STATES],
-            decisions: [0u8; TRACEBACK * NUM_STATES],
+            decisions: [0u64; TRACEBACK],
             survivor: [0; TRACEBACK],
             sign_a: [0; NUM_STATES],
             sign_b: [0; NUM_STATES],
@@ -278,7 +278,7 @@ impl StreamingState {
 
     fn reset(&mut self) {
         self.metrics = [0; NUM_STATES];
-        self.decisions = [0u8; TRACEBACK * NUM_STATES];
+        self.decisions = [0u64; TRACEBACK];
         self.position = 0;
         self.pair = [0; 2];
         self.pair_len = 0;
@@ -340,7 +340,8 @@ impl StreamingState {
 
     #[allow(dead_code)]
     fn acs_scalar(&mut self, a: i32, b: i32) {
-        let slot = (self.step_count % TRACEBACK) * NUM_STATES;
+        let slot = self.step_count % TRACEBACK;
+        let mut bits = 0u64;
         for state in 0..NUM_STATES {
             let pred = state >> 1;
             let branch = self.sign_a[state] * a + self.sign_b[state] * b;
@@ -348,12 +349,12 @@ impl StreamingState {
             let hi = self.metrics[pred | 32] - branch;
             if lo >= hi {
                 self.next[state] = lo;
-                self.decisions[slot + state] = pred as u8;
+                bits |= 1u64 << state;
             } else {
                 self.next[state] = hi;
-                self.decisions[slot + state] = (pred | 32) as u8;
             }
         }
+        self.decisions[slot] = bits;
     }
 
     /// f32x4-sized i32x4 ACS. Each 4-state block shares two predecessors, so the
@@ -361,21 +362,18 @@ impl StreamingState {
     #[cfg(target_arch = "wasm32")]
     unsafe fn acs_simd(&mut self, a: i32, b: i32) -> usize {
         use core::arch::wasm32::*;
-        let slot = (self.step_count % TRACEBACK) * NUM_STATES;
+        let slot = self.step_count % TRACEBACK;
         let va = i32x4_splat(a);
         let vb = i32x4_splat(b);
-        let v32 = i32x4_splat(32);
-        // Predecessor indices for states [s, s+1, s+2, s+3] are [m, m, m+1, m+1].
-        let inc = i32x4_shuffle::<0, 1, 4, 5>(i32x4_splat(0), i32x4_splat(1));
         let mp = self.metrics.as_ptr();
         let sa = self.sign_a.as_ptr();
         let sb = self.sign_b.as_ptr();
         let nxt = self.next.as_mut_ptr();
         let mut maximum = i32x4_splat(i32::MIN);
+        let mut bits = 0u64;
         let mut s = 0usize;
         while s + 4 <= NUM_STATES {
             let m = s >> 1;
-            let pred_idx = i32x4_add(i32x4_splat(m as i32), inc);
             let mlo = v128_load(mp.add(m) as *const v128);
             let pred_lo = i32x4_shuffle::<0, 0, 1, 1>(mlo, mlo);
             // Shift the load window down by two so the last block stays in bounds;
@@ -388,16 +386,14 @@ impl StreamingState {
             );
             let lo = i32x4_add(pred_lo, br);
             let hi = i32x4_sub(pred_hi, br);
-            let ge = i32x4_ge(lo, hi);
-            let decision = v128_bitselect(pred_idx, i32x4_add(pred_idx, v32), ge);
+            // Set bit s+lane when the low predecessor (state>>1) wins the compare.
+            bits |= (i32x4_bitmask(i32x4_ge(lo, hi)) as u64) << s;
             let scores = i32x4_max(lo, hi);
             maximum = i32x4_max(maximum, scores);
             v128_store(nxt.add(s) as *mut v128, scores);
-            let packed = i16x8_narrow_i32x4(decision, decision);
-            let packed = u8x16_narrow_i16x8(packed, packed);
-            v128_store32_lane::<0>(packed, self.decisions.as_mut_ptr().add(slot + s) as *mut u32);
             s += 4;
         }
+        self.decisions[slot] = bits;
         maximum = i32x4_max(maximum, i32x4_shuffle::<2, 3, 0, 1>(maximum, maximum));
         maximum = i32x4_max(maximum, i32x4_shuffle::<1, 0, 3, 2>(maximum, maximum));
         let mut best = NUM_STATES;
@@ -426,7 +422,8 @@ impl StreamingState {
         for j in 0..(TRACEBACK - 1) {
             let k = self.step_count - j;
             let decision_slot = (k - 1) % TRACEBACK;
-            s = self.decisions[decision_slot * NUM_STATES + s] as usize;
+            let bit = (self.decisions[decision_slot] >> s) & 1;
+            s = (s >> 1) | if bit == 1 { 0 } else { 32 };
             // Once this path merges into the previous traceback, its entire older
             // suffix is identical. Reuse it without shortening the traceback depth.
             if self.step_count > TRACEBACK && self.survivor[decision_slot] == s as u8 {

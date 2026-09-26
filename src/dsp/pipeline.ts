@@ -20,7 +20,7 @@ import {
   type TransmissionMode,
 } from './isdbtParams'
 import type { IqChunk } from '../iq/IQSource'
-import type { ReceptionQuality } from '../models/reception'
+import type { FrontendPath, ReceptionQuality } from '../models/reception'
 import type { TmccInfo } from '../models/tmcc'
 import { pilotReferenceAt, type ComplexBins } from './stages/channelEstimation'
 import { OneSegDecoder } from './oneSegDecoder'
@@ -50,6 +50,20 @@ export interface OneSegPipelineStats {
   symbolsProcessed: number
   tsBytes: number
   bufferedSamples: number
+  /** Total input-signal seconds fed since the session started. */
+  inputSignalSeconds: number
+  /** Cumulative wall-clock milliseconds spent in each pipeline stage. */
+  preprocessMs: number
+  frontendMs: number
+  decoderMs: number
+  acquisitionMs: number
+  acquisitionCount: number
+  lockLossCount: number
+  /** Cumulative GPU batch latency and readback wait in ms (WebGPU path only). */
+  gpuBatchMs: number
+  gpuReadbackMs: number
+  /** Active rate-conversion path (decimator when the source is 1x/2x the one-seg rate). */
+  frontendPath: FrontendPath
 }
 
 export interface OneSegPipelineCallbacks {
@@ -297,6 +311,15 @@ export class OneSegPipeline {
   private lastMerDb: number | null = null
   private lastProgressAt = 0
   private lastProgressTsBytes = 0
+  private inputSignalSeconds = 0
+  private preprocessMs = 0
+  private frontendMs = 0
+  private decoderMs = 0
+  private acquisitionMs = 0
+  private acquisitionCount = 0
+  private lockLossCount = 0
+  private gpuBatchMs = 0
+  private gpuReadbackMs = 0
 
   constructor(callbacks: OneSegPipelineCallbacks = {}, options: OneSegPipelineOptions = {}) {
     this.callbacks = callbacks
@@ -331,11 +354,16 @@ export class OneSegPipeline {
     if (this.decimator !== null && chunk.format === 'u8') {
       const data = chunk.data
       const u8 = data instanceof Uint8Array ? data : Uint8Array.from(data as ArrayLike<number>)
+      this.inputSignalSeconds +=
+        chunk.sampleRate > 0 ? Math.floor(data.length / 2) / chunk.sampleRate : 0
+      const t0 = this.clock()
       if (locked && this.gpuFrontend === null) {
         const block = this.decimator.processResident(u8)
+        this.preprocessMs += this.clock() - t0
         if (block.length > 0) this.processLockedPointers(block)
       } else {
         const rs = this.decimator.process(u8)
+        this.preprocessMs += this.clock() - t0
         this.consume(rs.re, rs.im)
       }
       this.emitStats()
@@ -343,6 +371,7 @@ export class OneSegPipeline {
     }
 
     const count = Math.floor(chunk.data.length / 2)
+    this.inputSignalSeconds += chunk.sampleRate > 0 ? count / chunk.sampleRate : 0
     if (count > this.inRe.length) {
       this.inRe = new Float32Array(count)
       this.inIm = new Float32Array(count)
@@ -369,12 +398,15 @@ export class OneSegPipeline {
       }
     }
 
+    const tPre = this.clock()
     this.dc.process(re, im)
     if (locked && this.gpuFrontend === null) {
       const block = this.resampler.processResident(re, im)
+      this.preprocessMs += this.clock() - tPre
       if (block.length > 0) this.processLockedPointers(block)
     } else {
       const rs = this.resampler.process(re, im)
+      this.preprocessMs += this.clock() - tPre
       this.consume(rs.re, rs.im)
     }
     this.emitStats()
@@ -393,7 +425,10 @@ export class OneSegPipeline {
       this.bufLen >= this.lastAcquireLen + ACQUIRE_MIN_SAMPLES
     ) {
       this.lastAcquireLen = this.bufLen
+      this.acquisitionCount += 1
+      const t0 = this.clock()
       this.tryAcquire()
+      this.acquisitionMs += this.clock() - t0
     }
   }
 
@@ -413,6 +448,7 @@ export class OneSegPipeline {
   }
 
   private releaseLock(): void {
+    this.lockLossCount += 1
     this.frontend?.dispose()
     this.gpuFrontend?.dispose()
     this.oneSeg?.dispose()
@@ -480,6 +516,15 @@ export class OneSegPipeline {
     this.lastPhi = 0
     this.lastSignalPower = 0
     this.lastMerDb = null
+    this.inputSignalSeconds = 0
+    this.preprocessMs = 0
+    this.frontendMs = 0
+    this.decoderMs = 0
+    this.acquisitionMs = 0
+    this.acquisitionCount = 0
+    this.lockLossCount = 0
+    this.gpuBatchMs = 0
+    this.gpuReadbackMs = 0
     this.emitStats()
   }
 
@@ -677,15 +722,19 @@ export class OneSegPipeline {
   private processLocked(re: Float32Array, im: Float32Array): void {
     const frontend = this.gpuFrontend ?? this.frontend
     if (!frontend) return
+    const t0 = this.clock()
     frontend.push(re, im)
     this.applyFrontendStats()
+    this.frontendMs += this.clock() - t0
     if (this.gpuFrontend === null) this.drainFrontend()
   }
 
   /** Decode equalized planes produced by the WebGPU front end. */
   private decodeGpuPlanes(re: Float32Array, im: Float32Array, symbolCount: number): void {
     if (this.oneSeg === null || symbolCount === 0) return
+    const t0 = this.clock()
     const out = this.oneSeg.decodeContiguous(re, im, symbolCount)
+    this.decoderMs += this.clock() - t0
     if (out.length > 0) {
       this.tsBytes += out.length
       this.callbacks.onTs?.(out)
@@ -700,8 +749,10 @@ export class OneSegPipeline {
   private processLockedPointers(block: ResidentBlock): void {
     const frontend = this.frontend
     if (!frontend) return
+    const t0 = this.clock()
     frontend.pushPointers(block.rePtr, block.imPtr, block.length)
     this.applyFrontendStats()
+    this.frontendMs += this.clock() - t0
     this.drainFrontend()
     this.checkLockLoss()
   }
@@ -716,6 +767,8 @@ export class OneSegPipeline {
     this.lastSignalPower = stats.signalPower
     this.lastMerDb = stats.merDb
     this.symbolsProcessed = this.frontendSymbolBase + stats.symbolsProcessed
+    this.gpuBatchMs = stats.gpuBatchMs ?? this.gpuBatchMs
+    this.gpuReadbackMs = stats.gpuReadbackMs ?? this.gpuReadbackMs
     const info = frontend.tmccInfo()
     if (info !== this.tmccInfo) {
       this.tmccInfo = info
@@ -734,7 +787,9 @@ export class OneSegPipeline {
       return
     }
     const { rePtr, imPtr } = frontend.pendingPointers()
+    const t0 = this.clock()
     const out = this.oneSeg.decodeResident(rePtr, imPtr, count)
+    this.decoderMs += this.clock() - t0
     frontend.clearPending()
     if (out.length > 0) {
       this.tsBytes += out.length
@@ -791,6 +846,16 @@ export class OneSegPipeline {
       symbolsProcessed: this.symbolsProcessed,
       tsBytes: this.tsBytes,
       bufferedSamples: this.bufLen,
+      inputSignalSeconds: this.inputSignalSeconds,
+      preprocessMs: this.preprocessMs,
+      frontendMs: this.frontendMs,
+      decoderMs: this.decoderMs,
+      acquisitionMs: this.acquisitionMs,
+      acquisitionCount: this.acquisitionCount,
+      lockLossCount: this.lockLossCount,
+      gpuBatchMs: this.gpuBatchMs,
+      gpuReadbackMs: this.gpuReadbackMs,
+      frontendPath: this.decimator !== null ? 'u8-decimator' : 'fractional-resampler',
     })
   }
 }

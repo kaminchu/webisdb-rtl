@@ -62,6 +62,23 @@ export function DebugOverlay() {
         {(throughput.dspUtilization * 100).toFixed(0)}% RTF {throughput.realTimeFactor.toFixed(2)}
       </div>
       <div>
+        前段 {throughput.frontendPath === 'u8-decimator' ? 'decimator' : 'fractional'} / 前処理{' '}
+        {throughput.stages.preprocessMsPerSecond.toFixed(1)} 前段{' '}
+        {throughput.stages.frontendMsPerSecond.toFixed(1)} 復号{' '}
+        {throughput.stages.decoderMsPerSecond.toFixed(1)} ms/s
+      </div>
+      <div>
+        取得 {throughput.acquisitionCount} 回 {throughput.stages.acquisitionMsPerSecond.toFixed(1)}{' '}
+        ms/s ロック喪失 {throughput.lockLossCount} 回
+      </div>
+      {(throughput.stages.gpuBatchMsPerSecond > 0 ||
+        throughput.stages.gpuReadbackMsPerSecond > 0) && (
+        <div>
+          GPU batch {throughput.stages.gpuBatchMsPerSecond.toFixed(1)} readback{' '}
+          {throughput.stages.gpuReadbackMsPerSecond.toFixed(1)} ms/s
+        </div>
+      )}
+      <div>
         バッファ {(buffer.occupancy * 100).toFixed(0)}% 遅延{' '}
         {buffer.estimatedDelaySeconds.toFixed(2)}s ドロップ {buffer.droppedSamples.toLocaleString()}
       </div>

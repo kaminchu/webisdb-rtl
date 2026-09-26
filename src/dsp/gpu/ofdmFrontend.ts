@@ -98,11 +98,16 @@ export class WebGpuFrontend {
   private meta: GPUBuffer | null = null
   private out: GPUBuffer | null = null
   private tmccOut: GPUBuffer | null = null
-  private stagingOut: GPUBuffer | null = null
-  private stagingTmcc: GPUBuffer | null = null
+  private staging: GPUBuffer | null = null
   private fftBind: GPUBindGroup | null = null
   private demapBind: GPUBindGroup | null = null
   private capacity = 0
+
+  private gpuBatchMs = 0
+  private gpuReadbackMs = 0
+  private gpuBatches = 0
+  private readonly tmccRe: Float32Array
+  private readonly tmccIm: Float32Array
 
   private bufRe = new Float32Array(1 << 16)
   private bufIm = new Float32Array(1 << 16)
@@ -152,6 +157,8 @@ export class WebGpuFrontend {
     this.frameStart = Math.max(0, params.frameStartSymbol)
     this.winRe = new Float32Array(this.n * MAX_BATCH)
     this.winIm = new Float32Array(this.n * MAX_BATCH)
+    this.tmccRe = new Float32Array(this.tmccCount)
+    this.tmccIm = new Float32Array(this.tmccCount)
     this.fftPipeline = resources.fftPipeline
     this.demapPipeline = resources.demapPipeline
     this.fftLayout = resources.fftLayout
@@ -243,6 +250,9 @@ export class WebGpuFrontend {
       signalPower: this.lastSignalPower,
       merDb: this.lastMerDb,
       symbolsProcessed: this.symbolsProcessed,
+      gpuBatchMs: this.gpuBatchMs,
+      gpuReadbackMs: this.gpuReadbackMs,
+      gpuBatches: this.gpuBatches,
     }
   }
 
@@ -432,6 +442,7 @@ export class WebGpuFrontend {
     const count = batch.symbolIndex.length
     this.ensureCapacity(count)
     const { device } = this
+    const startedAt = performance.now()
     const meta = new Uint32Array(2 * count)
     for (let i = 0; i < count; i++) {
       meta[2 * i] = this.winStart[this.winHead + i] >>> 0
@@ -458,6 +469,9 @@ export class WebGpuFrontend {
     queue.writeBuffer(this.meta!, 0, meta)
     queue.writeBuffer(this.paramsBuffer, 0, params)
 
+    const planesBytes = count * this.dc * 2 * 4
+    const tmccBytes = count * this.tmccCount * 2 * 4
+
     const encoder = device.createCommandEncoder()
     const fftPass = encoder.beginComputePass()
     fftPass.setPipeline(this.fftPipeline)
@@ -472,38 +486,38 @@ export class WebGpuFrontend {
     encoder.copyBufferToBuffer(
       this.out!,
       0,
-      this.stagingOut!,
+      this.staging!,
       0,
       Math.max(4, batch.decodedCount * this.dc * 2 * 4),
     )
-    encoder.copyBufferToBuffer(
-      this.tmccOut!,
-      0,
-      this.stagingTmcc!,
-      0,
-      count * this.tmccCount * 2 * 4,
-    )
+    encoder.copyBufferToBuffer(this.tmccOut!, 0, this.staging!, planesBytes, Math.max(4, tmccBytes))
     queue.submit([encoder.finish()])
 
-    await this.stagingOut!.mapAsync(MAP_MODE.READ)
-    const planes =
-      batch.decodedCount > 0 ? new Float32Array(this.stagingOut!.getMappedRange()) : null
-    const planesCopy = planes ? planes.slice() : null
-    this.stagingOut!.unmap()
+    const readStarted = performance.now()
+    await this.staging!.mapAsync(MAP_MODE.READ)
+    this.gpuReadbackMs += performance.now() - readStarted
+    if (this.disposed) {
+      this.staging!.unmap()
+      return
+    }
+    const mapped = new Float32Array(this.staging!.getMappedRange())
+    const planesCopy = mapped.slice(0, count * this.dc * 2)
+    const tmccCopy = mapped.slice(
+      count * this.dc * 2,
+      count * this.dc * 2 + count * this.tmccCount * 2,
+    )
+    this.staging!.unmap()
+    this.gpuBatchMs += performance.now() - startedAt
+    this.gpuBatches += 1
     if (this.disposed) return
 
-    await this.stagingTmcc!.mapAsync(MAP_MODE.READ)
-    const tmcc = new Float32Array(this.stagingTmcc!.getMappedRange()).slice()
-    this.stagingTmcc!.unmap()
-    if (this.disposed) return
-
-    this.consumeTmcc(count, batch.symbolIndex, tmcc)
-    if (planesCopy && batch.decodedCount > 0) this.consumePlanes(batch, planesCopy)
+    this.consumeTmcc(count, batch.symbolIndex, tmccCopy)
+    if (batch.decodedCount > 0) this.consumePlanes(batch, planesCopy)
   }
 
   private consumeTmcc(count: number, symbolIndex: Uint32Array, bins: Float32Array): void {
-    const tr = new Float32Array(this.tmccCount)
-    const ti = new Float32Array(this.tmccCount)
+    const tr = this.tmccRe
+    const ti = this.tmccIm
     for (let s = 0; s < count; s++) {
       const angle =
         (-2 * Math.PI * (this.params.carrierBase + this.cps / 2) * symbolIndex[s]) / this.params.gi
@@ -520,20 +534,21 @@ export class WebGpuFrontend {
   }
 
   private consumePlanes(batch: Batch, planes: Float32Array): void {
-    const re = new Float32Array(batch.decodedCount * this.dc)
-    const im = new Float32Array(batch.decodedCount * this.dc)
+    const dc = this.dc
+    const base = batch.decodedCount * dc
+    const re = planes.subarray(0, base)
+    const im = planes.subarray(batch.symbolIndex.length * dc, batch.symbolIndex.length * dc + base)
     for (let s = 0; s < batch.decodedCount; s++) {
       const symbolIndex = batch.symbolIndex[batch.firstDecoded + s]
+      if (symbolIndex % 4 !== 0) continue
       let power = 0
-      for (let k = 0; k < this.dc; k++) {
-        const src = (s * this.dc + k) * 2
-        const r = planes[src]
-        const q = planes[src + 1]
-        re[s * this.dc + k] = r
-        im[s * this.dc + k] = q
+      const off = s * dc
+      for (let k = 0; k < dc; k++) {
+        const r = re[off + k]
+        const q = im[off + k]
         power += r * r + q * q
       }
-      if (symbolIndex % 4 === 0) this.updateMer(re, im, s, power)
+      this.updateMer(re, im, s, power)
     }
     this.callbacks.onPlanes?.(re, im, batch.decodedCount)
   }
@@ -567,9 +582,8 @@ export class WebGpuFrontend {
     this.meta = device.createBuffer({ size: count * 8, usage: META_USAGE })
     this.out = device.createBuffer({ size: count * this.dc * 8, usage: OUT_USAGE })
     this.tmccOut = device.createBuffer({ size: count * this.tmccCount * 8, usage: OUT_USAGE })
-    this.stagingOut = device.createBuffer({ size: count * this.dc * 8, usage: STAGING_USAGE })
-    this.stagingTmcc = device.createBuffer({
-      size: count * this.tmccCount * 8,
+    this.staging = device.createBuffer({
+      size: Math.max(4, count * this.dc * 8 + count * this.tmccCount * 8),
       usage: STAGING_USAGE,
     })
     this.fftBind = device.createBindGroup({
@@ -608,8 +622,7 @@ export class WebGpuFrontend {
     this.meta?.destroy()
     this.out?.destroy()
     this.tmccOut?.destroy()
-    this.stagingOut?.destroy()
-    this.stagingTmcc?.destroy()
+    this.staging?.destroy()
     this.sampleRe = null
     this.sampleIm = null
     this.fftRe = null
@@ -617,8 +630,7 @@ export class WebGpuFrontend {
     this.meta = null
     this.out = null
     this.tmccOut = null
-    this.stagingOut = null
-    this.stagingTmcc = null
+    this.staging = null
     this.fftBind = null
     this.demapBind = null
     this.capacity = 0

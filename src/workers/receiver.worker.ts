@@ -85,6 +85,8 @@ function buildStats(now: number): ReceiverStats {
   const quality = lastStats?.quality ?? emptyReceptionQuality
   const processingMsPerInputSecond =
     inputSignalSeconds > 0 ? dspMs.totalValue / inputSignalSeconds : 0
+  const stageSeconds = Math.max(0.001, lastStats?.inputSignalSeconds ?? inputSignalSeconds)
+  const stagePerSecond = (ms: number | undefined): number => (ms ?? 0) / stageSeconds
   return {
     quality,
     throughput: {
@@ -94,6 +96,17 @@ function buildStats(now: number): ReceiverStats {
       dspUtilization: inputSignalSeconds > 0 ? Math.min(2, dspMs.peek() / 1000) : 0,
       dspProcessingMsPerSecond: processingMsPerInputSecond,
       realTimeFactor: processingMsPerInputSecond / 1000,
+      frontendPath: lastStats?.frontendPath ?? emptyThroughput.frontendPath,
+      stages: {
+        preprocessMsPerSecond: stagePerSecond(lastStats?.preprocessMs),
+        frontendMsPerSecond: stagePerSecond(lastStats?.frontendMs),
+        decoderMsPerSecond: stagePerSecond(lastStats?.decoderMs),
+        acquisitionMsPerSecond: stagePerSecond(lastStats?.acquisitionMs),
+        gpuBatchMsPerSecond: stagePerSecond(lastStats?.gpuBatchMs),
+        gpuReadbackMsPerSecond: stagePerSecond(lastStats?.gpuReadbackMs),
+      },
+      acquisitionCount: lastStats?.acquisitionCount ?? 0,
+      lockLossCount: lastStats?.lockLossCount ?? 0,
     },
     buffer: {
       ...emptyBufferMetrics,

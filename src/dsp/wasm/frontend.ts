@@ -63,6 +63,12 @@ export interface FrontendStats {
   signalPower: number
   merDb: number | null
   symbolsProcessed: number
+  /** Cumulative GPU batch latency in ms (WebGPU front end only). */
+  gpuBatchMs?: number
+  /** Cumulative GPU readback (`mapAsync`) wait in ms (WebGPU front end only). */
+  gpuReadbackMs?: number
+  /** Number of GPU batches submitted (WebGPU front end only). */
+  gpuBatches?: number
 }
 
 function readLayer(fields: Uint32Array, base: number): TmccLayerInfo | null {

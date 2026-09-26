@@ -97,33 +97,42 @@ impl SyncState {
         self.base_index += count as f64;
     }
 
-    fn find_peak(&self, from: i64, to: i64) -> Option<Peak> {
+    fn correlation(&self, start: usize) -> (f64, f64, f64) {
         let n = self.fft_size;
         let l = self.cp_length;
-        let max_start = self.buf_len as i64 - (n + l) as i64;
+        let mut gamma_re = 0.0f64;
+        let mut gamma_im = 0.0f64;
+        let mut phi = 0.0f64;
+        for i in 0..l {
+            let a = start + i;
+            let b = a + n;
+            let ar = self.buf_re[a] as f64;
+            let ai = self.buf_im[a] as f64;
+            let br = self.buf_re[b] as f64;
+            let bi = self.buf_im[b] as f64;
+            gamma_re += ar * br + ai * bi;
+            gamma_im += ai * br - ar * bi;
+            phi += 0.5 * (ar * ar + ai * ai);
+            phi += 0.5 * (br * br + bi * bi);
+        }
+        (gamma_re, gamma_im, phi)
+    }
+
+    fn find_peak(&self, from: i64, to: i64) -> Option<Peak> {
+        let n = self.fft_size as i64;
+        let l = self.cp_length as i64;
+        let max_start = self.buf_len as i64 - (n + l);
         let hi = to.min(max_start);
-        if from > hi {
+        if from < 0 || from > hi {
             return None;
         }
+        // Rolling CP correlation: moving the window by one sample removes the
+        // pair leaving at `start` and adds the pair entering at `start + l`, so
+        // the whole scan costs O(cp_length + search_width).
+        let mut start = from as usize;
+        let (mut gamma_re, mut gamma_im, mut phi) = self.correlation(start);
         let mut best: Option<Peak> = None;
-        let mut start = from;
-        while start <= hi {
-            let mut gamma_re = 0.0f64;
-            let mut gamma_im = 0.0f64;
-            let mut phi = 0.0f64;
-            let s = start as usize;
-            for i in 0..l {
-                let a = s + i;
-                let b = a + n;
-                let ar = self.buf_re[a] as f64;
-                let ai = self.buf_im[a] as f64;
-                let br = self.buf_re[b] as f64;
-                let bi = self.buf_im[b] as f64;
-                gamma_re += ar * br + ai * bi;
-                gamma_im += ai * br - ar * bi;
-                phi += 0.5 * (ar * ar + ai * ai);
-                phi += 0.5 * (br * br + bi * bi);
-            }
+        loop {
             let metric = gamma_re.hypot(gamma_im) - RHO * phi;
             let better = match &best {
                 None => true,
@@ -131,13 +140,34 @@ impl SyncState {
             };
             if better {
                 best = Some(Peak {
-                    index: start,
+                    index: start as i64,
                     metric,
                     gamma_re,
                     gamma_im,
                     phi,
                 });
             }
+            if start as i64 >= hi {
+                break;
+            }
+            let rem_a = start;
+            let rem_b = rem_a + n as usize;
+            let rem_ar = self.buf_re[rem_a] as f64;
+            let rem_ai = self.buf_im[rem_a] as f64;
+            let rem_br = self.buf_re[rem_b] as f64;
+            let rem_bi = self.buf_im[rem_b] as f64;
+            gamma_re -= rem_ar * rem_br + rem_ai * rem_bi;
+            gamma_im -= rem_ai * rem_br - rem_ar * rem_bi;
+            phi -= 0.5 * (rem_ar * rem_ar + rem_ai * rem_ai + rem_br * rem_br + rem_bi * rem_bi);
+            let add_a = start + l as usize;
+            let add_b = add_a + n as usize;
+            let add_ar = self.buf_re[add_a] as f64;
+            let add_ai = self.buf_im[add_a] as f64;
+            let add_br = self.buf_re[add_b] as f64;
+            let add_bi = self.buf_im[add_b] as f64;
+            gamma_re += add_ar * add_br + add_ai * add_bi;
+            gamma_im += add_ai * add_br - add_ar * add_bi;
+            phi += 0.5 * (add_ar * add_ar + add_ai * add_ai + add_br * add_br + add_bi * add_bi);
             start += 1;
         }
         best
