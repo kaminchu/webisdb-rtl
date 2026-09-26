@@ -125,7 +125,7 @@ describe.skipIf(!process.env.WEBGPU_CHROME)('WGSL on a WebGPU device', () => {
   })
 
   it('compiles all kernels and demaps each symbol from its own FFT plane', async () => {
-    const result = await send<Evaluation>(
+    const result = await send<Evaluation<{ errors: string[]; data: number[]; tmcc: number[] }>>(
       'Runtime.evaluate',
       {
         expression: `(${checkShaders.toString()})(...${JSON.stringify([[OFDM_FRONTEND_WGSL, DEMAP_WGSL, SYNC_WGSL], BUFFER_USAGE, MAP_MODE])})`,
@@ -135,12 +135,38 @@ describe.skipIf(!process.env.WEBGPU_CHROME)('WGSL on a WebGPU device', () => {
       sessionId,
     )
     expect(result.exceptionDetails, JSON.stringify(result.exceptionDetails)).toBeUndefined()
-    expect(result.result.value).toEqual({
-      errors: [],
-      data: [2, -2, 3, -3, 3, -3, 4, -4],
-      tmcc: [10, -10, 11, -11, 12, -12],
-    })
+    const value = result.result.value!
+    expect(value.errors).toEqual([])
+    expect(value.tmcc).toEqual([10, -10, 11, -11, 12, -12, 13, -13, 14, -14, 15, -15])
+    expect(value.data).toHaveLength(6 * 130 * 2)
+    for (let s = 0; s < 6; s++) {
+      for (let k = 0; k < 130; k++) {
+        const expected = s < 5 ? s + k + 2 : 0
+        expect(value.data[s * 130 + k]).toBeCloseTo(expected, 3)
+        expect(value.data[6 * 130 + s * 130 + k]).toBeCloseTo(-expected, 3)
+      }
+    }
   }, 30_000)
+
+  it.each([256, 512, 1024])(
+    'FFT size %i matches a direct complex DFT',
+    async (n) => {
+      const result = await send<Evaluation<{ errors: string[]; maxError: number }>>(
+        'Runtime.evaluate',
+        {
+          expression: `(${checkFft.toString()})(...${JSON.stringify([OFDM_FRONTEND_WGSL, BUFFER_USAGE, MAP_MODE, n])})`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      )
+      expect(result.exceptionDetails, JSON.stringify(result.exceptionDetails)).toBeUndefined()
+      expect(result.result.value!.errors).toEqual([])
+      // WGSL trig is approximate; compare unnormalized FFT error per input sample.
+      expect(result.result.value!.maxError / n).toBeLessThan(0.0002)
+    },
+    30_000,
+  )
 
   it.skipIf(!process.env.WEBGPU_IQ_FILE)(
     'decodes real IQ through the GPU pipeline',
@@ -188,11 +214,19 @@ async function checkShaders(
       layout: 'auto',
       compute: { module: modules[1], entryPoint: 'demap_main' },
     })
-    const n = 32
-    const count = 3
+    const n = 256
+    const count = 6
+    const dc = 130
+    const cps = 216
     const re = new Float32Array(n * count)
     const im = new Float32Array(n * count)
-    const refs = Float32Array.from({ length: 24 }, (_, c) => (c % 2 ? -4 / 3 : 4 / 3))
+    const refs = Float32Array.from({ length: cps }, (_, c) => (c % 2 ? -4 / 3 : 4 / 3))
+    const indices = Array.from({ length: 4 }, (_, phase) => [
+      ...Array.from({ length: cps - 1 }, (_carrier, c) => c)
+        .filter((c) => c % 12 !== phase * 3 && c !== 7)
+        .slice(0, dc - 1),
+      cps - 1,
+    ])
     for (let s = 0; s < count; s++) {
       const put = (c: number, r: number, q: number) => {
         const bin = s * n + ((c - 4 + n) % n)
@@ -201,11 +235,11 @@ async function checkShaders(
       }
       const hr = s + 1
       const hi = s * 0.25
-      for (let c = 3 * ((s + 3) % 4); c < 24; c += 12) put(c, refs[c] * hr, refs[c] * hi)
-      for (let k = 0; k < 2; k++) {
+      for (let c = 3 * ((s + 3) % 4); c < cps; c += 12) put(c, refs[c] * hr, refs[c] * hi)
+      for (let k = 0; k < dc; k++) {
         const r = s + k + 1
         const q = -r
-        put(4 + k, r * hr - q * hi, r * hi + q * hr)
+        put(indices[(s + 3) % 4][k], r * hr - q * hi, r * hi + q * hr)
       }
       put(7, 10 + s, -10 - s)
     }
@@ -219,18 +253,18 @@ async function checkShaders(
     }
     const output = (size: number) =>
       device.createBuffer({ size, usage: usage.STORAGE | usage.COPY_SRC })
-    const out = output(2 * 2 * 2 * 4)
+    const out = output(count * dc * 2 * 4)
     const tmcc = output(count * 2 * 4)
     const buffers = [
       buffer(re),
       buffer(im),
-      buffer(new Uint32Array([0, 0, 0, 1, 0, 2])),
-      buffer(new Uint32Array([4, 5, 4, 5, 4, 5, 4, 5])),
+      buffer(new Uint32Array([0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5])),
+      buffer(new Uint32Array(indices.flat())),
       buffer(refs),
       buffer(new Uint32Array([7])),
       out,
       tmcc,
-      buffer(new Uint32Array([n, count, -4, 24, 2, 1, 1, 3, 1, 8, 0, 0]), true),
+      buffer(new Uint32Array([n, count, -4, cps, dc, 1, 1, 3, 1, 8, 0, 0]), true),
     ]
     const bind = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -244,7 +278,7 @@ async function checkShaders(
     const pass = encoder.beginComputePass()
     pass.setPipeline(pipeline)
     pass.setBindGroup(0, bind)
-    pass.dispatchWorkgroups(1)
+    pass.dispatchWorkgroups(count)
     pass.end()
     encoder.copyBufferToBuffer(out, 0, staging, 0, out.size)
     encoder.copyBufferToBuffer(tmcc, 0, staging, out.size, tmcc.size)
@@ -257,7 +291,106 @@ async function checkShaders(
     staging.unmap()
     const error = await device.popErrorScope()
     if (error) errors.push(error.message)
-    return { errors, data: values.slice(0, 8), tmcc: values.slice(8) }
+    return { errors, data: values.slice(0, count * dc * 2), tmcc: values.slice(count * dc * 2) }
+  } finally {
+    device.destroy()
+  }
+}
+
+async function checkFft(
+  source: string,
+  usage: typeof BUFFER_USAGE,
+  mapMode: typeof MAP_MODE,
+  n: number,
+) {
+  const adapter = await navigator.gpu.requestAdapter()
+  if (!adapter) throw new Error('WebGPU adapter unavailable')
+  const device = await adapter.requestDevice()
+  try {
+    device.pushErrorScope('validation')
+    const pipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: source }), entryPoint: 'fft_main' },
+    })
+    const count = 3
+    const starts = [37, 1901, 8197]
+    const re = Float32Array.from(
+      { length: n * count },
+      (_, i) => Math.sin(i * 0.173) * 0.7 + (((i * 17) % 101) - 50) / 101,
+    )
+    const im = Float32Array.from(
+      { length: n * count },
+      (_, i) => Math.cos(i * 0.071) * 0.4 + (((i * 31) % 97) - 48) / 97,
+    )
+    let maxError = 0
+    for (const cfo of [0, 137.25, -219.5]) {
+      const resources: GPUBuffer[] = []
+      const buffer = (
+        size: number,
+        flags: number,
+        data?: ArrayBuffer | Float32Array | Uint32Array,
+      ) => {
+        const b = device.createBuffer({ size, usage: flags })
+        resources.push(b)
+        if (data) device.queue.writeBuffer(b, 0, data)
+        return b
+      }
+      const bytes = n * count * 4
+      const inputUsage = usage.STORAGE | usage.COPY_DST
+      const outputUsage = usage.STORAGE | usage.COPY_SRC
+      const params = new ArrayBuffer(48)
+      const view = new DataView(params)
+      view.setUint32(0, n, true)
+      view.setUint32(4, count, true)
+      view.setFloat32(40, 1_000_000, true)
+      view.setFloat32(44, cfo, true)
+      const buffers = [
+        buffer(bytes, inputUsage, re),
+        buffer(bytes, inputUsage, im),
+        buffer(bytes, outputUsage),
+        buffer(bytes, outputUsage),
+        buffer(count * 8, inputUsage, new Uint32Array(starts.flatMap((start, s) => [start, s]))),
+        buffer(48, usage.UNIFORM | usage.COPY_DST, params),
+      ]
+      const staging = buffer(bytes * 2, usage.MAP_READ | usage.COPY_DST)
+      const bind = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: buffers.map((b, binding) => ({ binding, resource: { buffer: b } })),
+      })
+      const encoder = device.createCommandEncoder()
+      const pass = encoder.beginComputePass()
+      pass.setPipeline(pipeline)
+      pass.setBindGroup(0, bind)
+      pass.dispatchWorkgroups(count + 1)
+      pass.end()
+      encoder.copyBufferToBuffer(buffers[2], 0, staging, 0, bytes)
+      encoder.copyBufferToBuffer(buffers[3], 0, staging, bytes, bytes)
+      device.queue.submit([encoder.finish()])
+      await staging.mapAsync(mapMode.READ)
+      const actual = new Float32Array(staging.getMappedRange())
+      for (let s = 0; s < count; s++) {
+        for (let k = 0; k < n; k++) {
+          let r = 0
+          let q = 0
+          for (let i = 0; i < n; i++) {
+            const angle = -2 * Math.PI * ((k * i) / n + (cfo * (starts[s] + i)) / 1_000_000)
+            const c = Math.cos(angle)
+            const sn = Math.sin(angle)
+            r += re[s * n + i] * c - im[s * n + i] * sn
+            q += re[s * n + i] * sn + im[s * n + i] * c
+          }
+          maxError = Math.max(
+            maxError,
+            Math.abs(actual[s * n + k] - r),
+            Math.abs(actual[n * count + s * n + k] - q),
+          )
+        }
+      }
+      staging.unmap()
+      for (const b of resources) b.destroy()
+    }
+    const error = await device.popErrorScope()
+    return { errors: error ? [error.message] : [], maxError }
   } finally {
     device.destroy()
   }

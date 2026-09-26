@@ -21,7 +21,6 @@ import { DEMAP_WGSL, OFDM_FRONTEND_WGSL } from './shaders'
 import { BUFFER_USAGE, MAP_MODE, SHADER_STAGE } from './gpuConstants'
 
 const MAX_BATCH = 16
-const WORKGROUP = 64
 const PARAMS_FIELDS = 12
 
 const FFT_USAGE = BUFFER_USAGE.STORAGE | BUFFER_USAGE.COPY_DST
@@ -123,6 +122,9 @@ export class WebGpuFrontend {
   private winSymbol: number[] = []
   private winCount = 0
   private winHead = 0
+  private readonly batchRe: Float32Array
+  private readonly batchIm: Float32Array
+  private readonly batchSymbols = new Uint32Array(MAX_BATCH)
 
   private symbolIndex = 0
   private symbolsProcessed = 0
@@ -157,6 +159,8 @@ export class WebGpuFrontend {
     this.frameStart = Math.max(0, params.frameStartSymbol)
     this.winRe = new Float32Array(this.n * MAX_BATCH)
     this.winIm = new Float32Array(this.n * MAX_BATCH)
+    this.batchRe = new Float32Array(this.n * MAX_BATCH)
+    this.batchIm = new Float32Array(this.n * MAX_BATCH)
     this.tmccRe = new Float32Array(this.tmccCount)
     this.tmccIm = new Float32Array(this.tmccCount)
     this.fftPipeline = resources.fftPipeline
@@ -368,8 +372,8 @@ export class WebGpuFrontend {
     while (!this.disposed && (this.pendingLen > 0 || this.winHead < this.winCount)) {
       if (this.pendingLen > 0) {
         const len = this.pendingLen
-        const re = this.pendingRe.slice(0, len)
-        const im = this.pendingIm.slice(0, len)
+        const re = this.pendingRe.subarray(0, len)
+        const im = this.pendingIm.subarray(0, len)
         this.pendingLen = 0
         this.appendToBuffer(re, im)
         const fed = this.sync.process(re, im)
@@ -413,9 +417,9 @@ export class WebGpuFrontend {
   }
 
   private collectBatch(count: number): Batch {
-    const re = new Float32Array(count * this.n)
-    const im = new Float32Array(count * this.n)
-    const symbolIndex = new Uint32Array(count)
+    const re = this.batchRe.subarray(0, count * this.n)
+    const im = this.batchIm.subarray(0, count * this.n)
+    const symbolIndex = this.batchSymbols.subarray(0, count)
     for (let i = 0; i < count; i++) {
       const src = (this.winHead + i) * this.n
       re.set(this.winRe.subarray(src, src + this.n), i * this.n)
@@ -476,20 +480,14 @@ export class WebGpuFrontend {
     const fftPass = encoder.beginComputePass()
     fftPass.setPipeline(this.fftPipeline)
     fftPass.setBindGroup(0, this.fftBind!)
-    fftPass.dispatchWorkgroups(Math.ceil(count / WORKGROUP))
+    fftPass.dispatchWorkgroups(count)
     fftPass.end()
     const demapPass = encoder.beginComputePass()
     demapPass.setPipeline(this.demapPipeline)
     demapPass.setBindGroup(0, this.demapBind!)
-    demapPass.dispatchWorkgroups(Math.ceil(count / WORKGROUP))
+    demapPass.dispatchWorkgroups(count)
     demapPass.end()
-    encoder.copyBufferToBuffer(
-      this.out!,
-      0,
-      this.staging!,
-      0,
-      Math.max(4, batch.decodedCount * this.dc * 2 * 4),
-    )
+    encoder.copyBufferToBuffer(this.out!, 0, this.staging!, 0, planesBytes)
     encoder.copyBufferToBuffer(this.tmccOut!, 0, this.staging!, planesBytes, Math.max(4, tmccBytes))
     queue.submit([encoder.finish()])
 

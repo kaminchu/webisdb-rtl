@@ -2,7 +2,7 @@
  * WGSL compute kernels for the WebGPU OFDM front end.
  *
  * `fft_main` derotates each symbol window by the constant carrier offset and
- * runs a batched radix-2 forward FFT (one invocation per symbol, the window
+ * runs a batched radix-2 forward FFT (one workgroup per symbol, the window
  * staged contiguously in `sampleRe/Im`). `demap_main` extracts the center
  * segment, forms the LS channel estimate at the scattered pilots with linear
  * interpolation and edge hold, zero-forcing equalizes the requested data
@@ -35,9 +35,13 @@ struct Params {
 @group(0) @binding(4) var<storage, read> symbolMeta: array<u32>;
 @group(0) @binding(5) var<uniform> params: Params;
 
+var<workgroup> scratch: array<vec2<f32>, 1024>;
+var<workgroup> twiddles: array<vec2<f32>, 512>;
+
 @compute @workgroup_size(64)
-fn fft_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let s = gid.x;
+fn fft_main(@builtin(workgroup_id) group: vec3<u32>,
+            @builtin(local_invocation_index) lane: u32) {
+  let s = group.x;
   if (s >= params.count) {
     return;
   }
@@ -45,71 +49,45 @@ fn fft_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let base = s * n;
   let start = i32(symbolMeta[2u * s]);
   let step = -6.283185307179586 * params.fractionalOffsetHz / params.sampleRate;
-  for (var i: u32 = 0u; i < n; i = i + 1u) {
+  let shift = countLeadingZeros(n) + 1u;
+  for (var i = lane; i < n; i = i + 64u) {
     let phase = step * f32(start + i32(i));
     let c = cos(phase);
     let sn = sin(phase);
     let r = sampleRe[base + i];
     let q = sampleIm[base + i];
-    fftRe[base + i] = r * c - q * sn;
-    fftIm[base + i] = r * sn + q * c;
+    scratch[reverseBits(i) >> shift] = vec2<f32>(r * c - q * sn, r * sn + q * c);
   }
 
-  var j: u32 = 0u;
-  for (var i: u32 = 1u; i < n; i = i + 1u) {
-    var bit = n >> 1u;
-    loop {
-      if ((j & bit) == 0u) {
-        break;
-      }
-      j = j ^ bit;
-      bit = bit >> 1u;
-    }
-    j = j ^ bit;
-    if (i < j) {
-      let a = base + i;
-      let b = base + j;
-      let tr = fftRe[a];
-      fftRe[a] = fftRe[b];
-      fftRe[b] = tr;
-      let ti = fftIm[a];
-      fftIm[a] = fftIm[b];
-      fftIm[b] = ti;
-    }
+  for (var i = lane; i < n / 2u; i = i + 64u) {
+    let angle = -6.283185307179586 * f32(i) / f32(n);
+    twiddles[i] = vec2<f32>(cos(angle), sin(angle));
   }
+  workgroupBarrier();
 
   var len: u32 = 2u;
   loop {
     if (len > n) {
       break;
     }
-    let ang = -6.283185307179586 / f32(len);
-    let wr = cos(ang);
-    let wi = sin(ang);
     let half = len >> 1u;
-    var i: u32 = 0u;
-    loop {
-      if (i >= n) {
-        break;
-      }
-      var curR = 1.0;
-      var curI = 0.0;
-      for (var k: u32 = 0u; k < half; k = k + 1u) {
-        let a = base + i + k;
-        let b = a + half;
-        let vr = fftRe[b] * curR - fftIm[b] * curI;
-        let vi = fftRe[b] * curI + fftIm[b] * curR;
-        fftRe[b] = fftRe[a] - vr;
-        fftIm[b] = fftIm[a] - vi;
-        fftRe[a] = fftRe[a] + vr;
-        fftIm[a] = fftIm[a] + vi;
-        let nextR = curR * wr - curI * wi;
-        curI = curR * wi + curI * wr;
-        curR = nextR;
-      }
-      i = i + len;
+    for (var i = lane; i < n / 2u; i = i + 64u) {
+      let k = i % half;
+      let a = (i / half) * len + k;
+      let b = a + half;
+      let w = twiddles[k * (n / len)];
+      let u = scratch[a];
+      let v = scratch[b];
+      let t = vec2<f32>(v.x * w.x - v.y * w.y, v.x * w.y + v.y * w.x);
+      scratch[a] = u + t;
+      scratch[b] = u - t;
     }
+    workgroupBarrier();
     len = len << 1u;
+  }
+  for (var i = lane; i < n; i = i + 64u) {
+    fftRe[base + i] = scratch[i].x;
+    fftIm[base + i] = scratch[i].y;
   }
 }
 `
@@ -169,8 +147,9 @@ fn channel_at(c: u32, spPhase: u32, fftBase: u32) -> vec2<f32> {
 }
 
 @compute @workgroup_size(64)
-fn demap_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let s = gid.x;
+fn demap_main(@builtin(workgroup_id) group: vec3<u32>,
+              @builtin(local_invocation_index) lane: u32) {
+  let s = group.x;
   if (s >= params.count) {
     return;
   }
@@ -178,7 +157,7 @@ fn demap_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let fftBase = s * params.fftSize;
   let spPhase = (symIdx + params.spOffset) % 4u;
   let tn = params.tmccCount;
-  for (var j: u32 = 0u; j < tn; j = j + 1u) {
+  for (var j = lane; j < tn; j = j + 64u) {
     let b = fftBase + carrier_bin(tmccCarriers[j]);
     tmccOut[(s * tn + j) * 2u] = fftRe[b];
     tmccOut[(s * tn + j) * 2u + 1u] = fftIm[b];
@@ -188,7 +167,7 @@ fn demap_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   let outBase = (s - params.firstDecoded) * params.dc;
   let idxBase = spPhase * params.dc;
-  for (var k: u32 = 0u; k < params.dc; k = k + 1u) {
+  for (var k = lane; k < params.dc; k = k + 64u) {
     let d = dataIdx[idxBase + k];
     let b = fftBase + carrier_bin(d);
     let y = vec2<f32>(fftRe[b], fftIm[b]);
