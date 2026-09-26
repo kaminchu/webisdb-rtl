@@ -10,6 +10,7 @@ import timetableStyles from '../epg/timetable.module.css'
 
 const CHANNEL_WIDTH = 116
 const TIME_SCALE_WIDTH = 42
+const HEADER_HEIGHT = 32
 const PX_PER_MINUTE = 1.2
 const CELL_GAP = 1
 const MIN_CELL_HEIGHT = 18
@@ -17,7 +18,7 @@ const HOUR_MINUTES = 60
 const HALF_HOUR_MINUTES = 30
 
 export function CompactGuide() {
-  const { guide, selectChannel } = useEpg(2)
+  const { guide, selectChannel } = useEpg({ auto: true })
   const currentChannel = useStore((s) => s.receiver.channel)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const didAutoScroll = useRef(false)
@@ -40,8 +41,11 @@ export function CompactGuide() {
 
   useEffect(() => {
     if (didAutoScroll.current || guide.entries.length === 0) return
+    const scroller = scrollerRef.current
+    if (!scroller) return
     didAutoScroll.current = true
-    scrollerRef.current?.scrollTo({ top: Math.max(0, nowTop - 24) })
+    const visibleHeight = scroller.clientHeight - HEADER_HEIGHT
+    scroller.scrollTo({ top: Math.max(0, nowTop - visibleHeight / 3) })
   }, [guide.entries.length, nowTop])
 
   if (guide.entries.length === 0) {

@@ -61,6 +61,46 @@ describe('buildChannelGuide', () => {
     expect(guide.total).toBe(1)
   })
 
+  it('shows every fetched event and sizes the range to it in auto mode', () => {
+    const events = [
+      makeEvent({ eventId: 1, serviceId: 10, title: 'now', running: true }),
+      makeEvent({
+        eventId: 2,
+        serviceId: 10,
+        title: 'far',
+        startTime: new Date(NOW.getTime() + 10 * 3_600_000),
+      }),
+      makeEvent({
+        eventId: 3,
+        serviceId: 10,
+        title: 'past',
+        startTime: new Date(NOW.getTime() - 2 * 3_600_000),
+      }),
+    ]
+    const guide = buildChannelGuide(
+      [channel({ physicalChannel: 17, serviceId: 10, name: 'BSN' })],
+      events,
+      new Map(),
+      new Map(),
+      { now: NOW, auto: true },
+    )
+    expect(guide.entries[0].events.map((event) => event.title)).toEqual(['past', 'now', 'far'])
+    expect(guide.rangeStart.getTime()).toBe(NOW.getTime() - 2 * 3_600_000)
+    expect(guide.rangeEnd.getTime()).toBe(NOW.getTime() + 11 * 3_600_000)
+  })
+
+  it('falls back to the fixed window in auto mode with no events', () => {
+    const guide = buildChannelGuide(
+      [channel({ physicalChannel: 17, serviceId: 10 })],
+      [],
+      new Map(),
+      new Map(),
+      { now: NOW, auto: true, hours: 2, pastHours: 1 },
+    )
+    expect(guide.rangeStart.getTime()).toBe(NOW.getTime() - 3_600_000)
+    expect(guide.rangeEnd.getTime()).toBe(NOW.getTime() + 2 * 3_600_000)
+  })
+
   it('uses scan-discovered service ids for a channel', () => {
     const guide = buildChannelGuide(
       [channel({ physicalChannel: 19 })],

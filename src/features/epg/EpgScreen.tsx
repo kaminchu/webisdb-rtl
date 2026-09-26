@@ -29,7 +29,7 @@ interface SelectedProgram {
 }
 
 export function EpgScreen() {
-  const { guide, loading, selectChannel } = useEpg(6)
+  const { guide, loading, selectChannel } = useEpg({ hours: 6 })
   const fetch = useEpgFetch()
   const currentChannel = useStore((s) => s.receiver.channel)
   const [selected, setSelected] = useState<SelectedProgram | null>(null)

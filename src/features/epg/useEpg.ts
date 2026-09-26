@@ -44,6 +44,8 @@ export interface ChannelGuide {
 export interface ChannelGuideOptions {
   hours?: number
   pastHours?: number
+  /** Derive the time range from the fetched events instead of a fixed window. */
+  auto?: boolean
   now?: Date
   /** Simple station logo per service, keyed by service ID. */
   serviceLogos?: ReadonlyMap<number, string>
@@ -119,6 +121,7 @@ export function buildChannelGuide(
   options: ChannelGuideOptions = {},
 ): ChannelGuide {
   const now = options.now ?? new Date()
+  const auto = options.auto ?? false
   const hours = options.hours ?? 6
   const pastHours = options.pastHours ?? 1
   const rangeStart = new Date(now.getTime() - pastHours * 3_600_000)
@@ -127,6 +130,8 @@ export function buildChannelGuide(
 
   const entries: ChannelGuideEntry[] = []
   let total = 0
+  let earliestStart = Number.POSITIVE_INFINITY
+  let latestEnd = Number.NEGATIVE_INFINITY
   for (const channel of channels) {
     const ids = new Set<number>()
     if (channel.serviceId !== undefined) ids.add(channel.serviceId)
@@ -137,8 +142,10 @@ export function buildChannelGuide(
       if (!ids.has(event.serviceId)) continue
       const start = event.startTime.getTime()
       const end = start + event.duration * 1000
-      if (end < rangeStart.getTime() || start > rangeEnd.getTime()) continue
+      if (!auto && (end < rangeStart.getTime() || start > rangeEnd.getTime())) continue
       channelEvents.push(event)
+      if (start < earliestStart) earliestStart = start
+      if (end > latestEnd) latestEnd = end
     }
     channelEvents.sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
 
@@ -169,6 +176,16 @@ export function buildChannelGuide(
     total += channelEvents.length
   }
 
+  if (auto && Number.isFinite(earliestStart) && Number.isFinite(latestEnd)) {
+    return {
+      generatedAt: now,
+      rangeStart: new Date(Math.min(earliestStart, now.getTime())),
+      rangeEnd: new Date(Math.max(latestEnd, now.getTime())),
+      entries,
+      total,
+    }
+  }
+
   return { generatedAt: now, rangeStart, rangeEnd, entries, total }
 }
 
@@ -178,7 +195,15 @@ export interface EpgState {
   selectChannel(entry: ChannelGuideEntry): void
 }
 
-export function useEpg(hours = 6): EpgState {
+export interface UseEpgOptions {
+  hours?: number
+  pastHours?: number
+  /** Show every fetched event and size the range to it instead of a fixed window. */
+  auto?: boolean
+}
+
+export function useEpg(options: UseEpgOptions = {}): EpgState {
+  const { hours, pastHours, auto } = options
   const channels = useStore((state) => state.configuredChannels)
   const liveServices = useStore((state) => state.diagnostics.services)
   const liveChannel = useStore((state) => state.receiver.channel)
@@ -398,10 +423,22 @@ export function useEpg(hours = 6): EpgState {
     () =>
       buildChannelGuide(channels, allEvents, serviceNames, serviceIdsByChannel, {
         hours,
+        pastHours,
+        auto,
         now,
         serviceLogos,
       }),
-    [channels, allEvents, serviceNames, serviceIdsByChannel, hours, now, serviceLogos],
+    [
+      channels,
+      allEvents,
+      serviceNames,
+      serviceIdsByChannel,
+      hours,
+      pastHours,
+      auto,
+      now,
+      serviceLogos,
+    ],
   )
 
   const selectChannel = useCallback((entry: ChannelGuideEntry) => {

@@ -1,4 +1,6 @@
 .root {
+  /* 32px sticky header plus two hours at CompactGuide's 1.2 px/min. */
+  --compact-guide-height: 176px;
   position: relative;
   height: 100%;
   display: flex;
@@ -85,7 +87,7 @@
   bottom: 0;
   z-index: 6;
   display: flex;
-  max-height: 45%;
+  max-height: var(--compact-guide-height);
 }
 
 .guideLayerFront {
@@ -105,7 +107,7 @@
 .dockedGuide {
   flex: none;
   display: flex;
-  max-height: 45%;
+  max-height: var(--compact-guide-height);
   min-height: 0;
 }
 
