@@ -25,7 +25,7 @@ const DEFAULT_SAMPLE_RATE = 1_200_000
 const DEFAULT_GAIN = 19.7
 
 /** RTL-SDR hardware rate implied by the selected front-end mode. */
-function desiredSampleRate(settings = loadSettings()): number {
+export function desiredSampleRate(settings = loadSettings()): number {
   return settings.frontend === RtlFrontendMode.RealtekIsdbt
     ? ISDBT_RTL_SAMPLE_RATE
     : (settings.sampleRate ?? DEFAULT_SAMPLE_RATE)

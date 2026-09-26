@@ -19,11 +19,12 @@ export function WatchScreen() {
   const [overlayOpen, setOverlayOpen] = useState(false)
   const [guideOnTop, setGuideOnTop] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [initialSettings] = useState(loadSettings)
   const [audioChannel, setAudioChannel] = useState<AudioChannelMode>(
-    () => loadSettings().ui.audioChannel,
+    initialSettings.ui.audioChannel,
   )
-  const [subtitles, setSubtitles] = useState(() => loadSettings().ui.subtitles)
-  const [showDebug, setShowDebug] = useState(() => loadSettings().debug.showOverlay)
+  const [subtitles, setSubtitles] = useState(initialSettings.ui.subtitles)
+  const [showDebug, setShowDebug] = useState(initialSettings.debug.showOverlay)
   const docked = useDockedGuide()
 
   const sourceKind = useStore((s) => s.receiver.sourceKind)
@@ -31,21 +32,20 @@ export function WatchScreen() {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const settings = loadSettings()
     const player = new OneSegPlayer(canvas, {
       onError: (error) => reportError('player', error),
-      bufferSec: settings.bufferSeconds,
+      bufferSec: initialSettings.bufferSeconds,
     })
     playerRef.current = player
     receiverController.setPlayer(player)
-    player.setAudioChannel(settings.ui.audioChannel)
-    player.setSubtitlesEnabled(settings.ui.subtitles)
+    player.setAudioChannel(initialSettings.ui.audioChannel)
+    player.setSubtitlesEnabled(initialSettings.ui.subtitles)
     return () => {
       player.close()
       playerRef.current = null
       receiverController.setPlayer(null)
     }
-  }, [])
+  }, [initialSettings])
 
   const connected = sourceKind !== 'none'
 
@@ -99,7 +99,13 @@ export function WatchScreen() {
       <div className={styles.stage} onClick={onStageClick}>
         <PlayerView canvasRef={canvasRef} connected={connected} connecting={connecting} />
 
-        {showDebug && <DebugOverlay />}
+        {showDebug && (
+          <DebugOverlay
+            audioChannel={audioChannel}
+            subtitles={subtitles}
+            settings={initialSettings}
+          />
+        )}
 
         {overlayOpen && (
           <div

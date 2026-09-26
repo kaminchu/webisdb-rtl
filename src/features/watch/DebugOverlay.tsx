@@ -2,9 +2,19 @@ import { useEffect, useState } from 'react'
 import { receiverController } from '../../app/receiverController'
 import { useStore } from '../../app/store'
 import type { PlayerStats } from '../../media'
+import type { AudioChannelMode } from '../../models/media'
+import type { AppSettings } from '../../storage/settings'
+import { formatPlaybackSettings, formatReceptionSettings } from './debugSettings'
 import styles from './DebugOverlay.module.css'
 
 const POLL_MS = 500
+
+export interface DebugOverlayProps {
+  audioChannel: AudioChannelMode
+  subtitles: boolean
+  /** Settings snapshot captured when the player was created. */
+  settings: AppSettings
+}
 
 function formatDecimal(value: number | null, digits: number, unit: string): string {
   if (value === null || !Number.isFinite(value)) return '—'
@@ -17,7 +27,7 @@ function formatRate(bytesPerSecond: number): string {
   return kb >= 1000 ? `${(kb / 1000).toFixed(2)} MB/s` : `${kb.toFixed(1)} kB/s`
 }
 
-export function DebugOverlay() {
+export function DebugOverlay({ audioChannel, subtitles, settings }: DebugOverlayProps) {
   const quality = useStore((s) => s.receiver.stats.quality)
   const throughput = useStore((s) => s.receiver.stats.throughput)
   const buffer = useStore((s) => s.receiver.stats.buffer)
@@ -45,6 +55,10 @@ export function DebugOverlay() {
 
   return (
     <div className={styles.overlay} aria-hidden="true">
+      <div className={styles.settings}>
+        <div>{formatReceptionSettings(settings)}</div>
+        <div>{formatPlaybackSettings(settings, audioChannel, subtitles)}</div>
+      </div>
       <div>
         FPS {fps.toFixed(1)} ドロップ {player?.dropped ?? 0}
       </div>
