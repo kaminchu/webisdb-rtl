@@ -112,6 +112,30 @@ describe('WasmStreamingViterbi', () => {
       expect(emitted).toEqual(runWasmStreaming(rate, soft))
       expect(emitted).toEqual(runTsStreaming(rate, soft))
     })
+
+    it(`preserves full traceback through noise, ties, ring wraps and reset for ${rate}`, () => {
+      const soft = new Int8Array(16_384)
+      let seed = 0x12345678
+      for (let i = 0; i < soft.length; i++) {
+        seed ^= seed << 13
+        seed ^= seed >>> 17
+        seed ^= seed << 5
+        soft[i] = i % 2048 < 512 ? 0 : (seed & 255) - 128
+      }
+      const expected = runTsStreaming(rate, soft)
+      const decoder = new WasmStreamingViterbi(rate)
+      try {
+        expect(Array.from(decoder.feedSoftBlock(soft))).toEqual(expected)
+        decoder.reset()
+        const chunked: number[] = []
+        for (let i = 0; i < soft.length; i += 113) {
+          chunked.push(...decoder.feedSoftBlock(soft.subarray(i, i + 113)))
+        }
+        expect(chunked).toEqual(expected)
+      } finally {
+        decoder.dispose()
+      }
+    })
   }
 
   it('feedSoftBlock matches feeding in chunks', () => {

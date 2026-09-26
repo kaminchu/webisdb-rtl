@@ -241,6 +241,7 @@ pub struct StreamingState {
     metrics: [i32; NUM_STATES],
     next: [i32; NUM_STATES],
     decisions: [u8; TRACEBACK * NUM_STATES],
+    survivor: [u8; TRACEBACK],
     sign_a: [i32; NUM_STATES],
     sign_b: [i32; NUM_STATES],
     position: usize,
@@ -258,6 +259,7 @@ impl StreamingState {
             metrics: [0; NUM_STATES],
             next: [0; NUM_STATES],
             decisions: [0u8; TRACEBACK * NUM_STATES],
+            survivor: [0; TRACEBACK],
             sign_a: [0; NUM_STATES],
             sign_b: [0; NUM_STATES],
             position: 0,
@@ -314,13 +316,26 @@ impl StreamingState {
     /// Inputs are soft i8 (lengthened to i32) and the branch metric is a signed
     /// sum, so the whole decoder stays in integers. Normalising the maximum to
     /// zero after every step bounds the dynamic range well inside i32.
-    fn acs(&mut self, a: i32, b: i32) {
+    fn acs(&mut self, a: i32, b: i32) -> usize {
         #[cfg(target_arch = "wasm32")]
         unsafe {
-            self.acs_simd(a, b);
+            return self.acs_simd(a, b);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.acs_scalar(a, b);
+        {
+            self.acs_scalar(a, b);
+            let mut best = 0usize;
+            for s in 1..NUM_STATES {
+                if self.next[s] > self.next[best] {
+                    best = s;
+                }
+            }
+            let max = self.next[best];
+            for s in 0..NUM_STATES {
+                self.metrics[s] = self.next[s] - max;
+            }
+            best
+        }
     }
 
     #[allow(dead_code)]
@@ -344,7 +359,7 @@ impl StreamingState {
     /// f32x4-sized i32x4 ACS. Each 4-state block shares two predecessors, so the
     /// `[m0,m0,m1,m1]` / `[m32,m32,m33,m33]` vectors are built with a shuffle.
     #[cfg(target_arch = "wasm32")]
-    unsafe fn acs_simd(&mut self, a: i32, b: i32) {
+    unsafe fn acs_simd(&mut self, a: i32, b: i32) -> usize {
         use core::arch::wasm32::*;
         let slot = (self.step_count % TRACEBACK) * NUM_STATES;
         let va = i32x4_splat(a);
@@ -356,6 +371,7 @@ impl StreamingState {
         let sa = self.sign_a.as_ptr();
         let sb = self.sign_b.as_ptr();
         let nxt = self.next.as_mut_ptr();
+        let mut maximum = i32x4_splat(i32::MIN);
         let mut s = 0usize;
         while s + 4 <= NUM_STATES {
             let m = s >> 1;
@@ -374,38 +390,50 @@ impl StreamingState {
             let hi = i32x4_sub(pred_hi, br);
             let ge = i32x4_ge(lo, hi);
             let decision = v128_bitselect(pred_idx, i32x4_add(pred_idx, v32), ge);
-            v128_store(nxt.add(s) as *mut v128, i32x4_max(lo, hi));
-            self.decisions[slot + s] = i32x4_extract_lane::<0>(decision) as u8;
-            self.decisions[slot + s + 1] = i32x4_extract_lane::<1>(decision) as u8;
-            self.decisions[slot + s + 2] = i32x4_extract_lane::<2>(decision) as u8;
-            self.decisions[slot + s + 3] = i32x4_extract_lane::<3>(decision) as u8;
+            let scores = i32x4_max(lo, hi);
+            maximum = i32x4_max(maximum, scores);
+            v128_store(nxt.add(s) as *mut v128, scores);
+            let packed = i16x8_narrow_i32x4(decision, decision);
+            let packed = u8x16_narrow_i16x8(packed, packed);
+            v128_store32_lane::<0>(packed, self.decisions.as_mut_ptr().add(slot + s) as *mut u32);
             s += 4;
         }
+        maximum = i32x4_max(maximum, i32x4_shuffle::<2, 3, 0, 1>(maximum, maximum));
+        maximum = i32x4_max(maximum, i32x4_shuffle::<1, 0, 3, 2>(maximum, maximum));
+        let mut best = NUM_STATES;
+        for s in (0..NUM_STATES).step_by(4) {
+            let scores = v128_load(nxt.add(s) as *const v128);
+            // Equal metrics must choose the lowest state, just like the scalar decoder.
+            let mask = i32x4_bitmask(i32x4_eq(scores, maximum));
+            if best == NUM_STATES && mask != 0 {
+                best = s + mask.trailing_zeros() as usize;
+            }
+            v128_store(self.metrics.as_mut_ptr().add(s) as *mut v128, i32x4_sub(scores, maximum));
+        }
+        best
     }
 
     fn step(&mut self, a: i32, b: i32) -> Option<u8> {
-        self.acs(a, b);
-
-        let mut best = 0usize;
-        for s in 1..NUM_STATES {
-            if self.next[s] > self.next[best] {
-                best = s;
-            }
-        }
-        let max = self.next[best];
-        for s in 0..NUM_STATES {
-            self.metrics[s] = self.next[s] - max;
-        }
+        let best = self.acs(a, b);
         self.step_count += 1;
         if self.step_count < TRACEBACK {
             return None;
         }
 
         let mut s = best;
+        self.survivor[self.step_count % TRACEBACK] = s as u8;
+        let target = (self.step_count - (TRACEBACK - 1)) % TRACEBACK;
         for j in 0..(TRACEBACK - 1) {
             let k = self.step_count - j;
-            let decision_slot = (((k - 1) % TRACEBACK) + TRACEBACK) % TRACEBACK;
+            let decision_slot = (k - 1) % TRACEBACK;
             s = self.decisions[decision_slot * NUM_STATES + s] as usize;
+            // Once this path merges into the previous traceback, its entire older
+            // suffix is identical. Reuse it without shortening the traceback depth.
+            if self.step_count > TRACEBACK && self.survivor[decision_slot] == s as u8 {
+                s = self.survivor[target] as usize;
+                break;
+            }
+            self.survivor[decision_slot] = s as u8;
         }
         self.byte = ((self.byte << 1) | (s as u32 & 1)) & 0xff;
         self.bits += 1;
